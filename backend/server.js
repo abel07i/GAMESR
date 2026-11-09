@@ -861,65 +861,44 @@ app.get('/api/v1/rooms/:id', (req, res) => {
 // Ensure an open room exists for the selected targetJackpot and groupSize
 app.post('/api/v1/rooms/ensure', async (req, res) => {
   try {
-    const { targetJackpot, groupSize } = req.body;
-    if (!targetJackpot) {
-      return res.status(400).json({ error: 'Missing targetJackpot' });
-    }
-    const jackpotNum = parseFloat(targetJackpot);
-    let tierCategory = 'starter';
-    if (jackpotNum >= 100000) tierCategory = 'gold';
-    else if (jackpotNum >= 10000) tierCategory = 'silver';
-    else if (jackpotNum >= 1000)  tierCategory = 'bronze';
-
-    if (groupSize && groupSize !== 'all') {
-      const sizeNum = parseInt(groupSize);
-      let existing = Array.from(roomManager.rooms.values()).find(
-        r => (r.status === 'open' || r.status === 'drawing') &&
-             r.groupSize === sizeNum &&
-             Math.round(r.targetJackpot) === Math.round(jackpotNum)
-      );
-
-      if (!existing) {
-        existing = await roomManager.createRoom(tierCategory, jackpotNum, sizeNum);
-        console.log(`✨ Auto-ensured open room: Game #${existing.roomNumber} (${sizeNum} players, ${jackpotNum} Birr)`);
-      }
-      return res.json({ success: true, room: existing, rooms: roomManager.getRoomSummaries() });
-    } else {
-      const standardSizes = [5, 10, 20, 40, 50, 80];
-      for (const sz of standardSizes) {
-        const exists = Array.from(roomManager.rooms.values()).some(
-          r => (r.status === 'open' || r.status === 'drawing') &&
-               r.groupSize === sz &&
-               Math.round(r.targetJackpot) === Math.round(jackpotNum)
-        );
-        if (!exists) {
-          await roomManager.createRoom(tierCategory, jackpotNum, sz);
-        }
-      }
-      return res.json({ success: true, rooms: roomManager.getRoomSummaries() });
-    }
+    // Rooms are now created on-demand when users place bets to prevent database overhead.
+    return res.json({ success: true, rooms: roomManager.getRoomSummaries() });
   } catch (err) {
     console.error('ensure room error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Create a brand-new room and immediately join it
+// Create a brand-new room (or reuse an existing open one) and immediately join it
 app.post('/api/v1/rooms/create_and_join', playerMiddleware, async (req, res) => {
   try {
     const userId = req.playerId;
     const { mode = 'real', username, groupSize, seatNumbers, targetJackpot } = req.body;
 
-    let tierCategory = 'starter';
-    if (targetJackpot >= 100000) tierCategory = 'gold';
-    else if (targetJackpot >= 10000) tierCategory = 'silver';
-    else if (targetJackpot >= 1000)  tierCategory = 'bronze';
-
-    const room = await roomManager.createRoom(tierCategory, targetJackpot, groupSize);
+    const sizeNum = parseInt(groupSize);
+    const jackpotNum = parseFloat(targetJackpot);
     const seatCount = seatNumbers && seatNumbers.length > 0 ? seatNumbers.length : 1;
-    const { newBalance } = await roomManager.joinRoom(room.id, userId, seatCount, mode, username, seatNumbers);
 
-    res.json({ success: true, balance: newBalance, room: roomManager.rooms.get(room.id) || room });
+    let tierCategory = 'starter';
+    if (jackpotNum >= 100000) tierCategory = 'gold';
+    else if (jackpotNum >= 10000) tierCategory = 'silver';
+    else if (jackpotNum >= 1000)  tierCategory = 'bronze';
+
+    // Check if an open room matching this prize and player count already exists
+    let room = Array.from(roomManager.rooms.values()).find(
+      r => r.status === 'open' &&
+           r.groupSize === sizeNum &&
+           Math.round(r.targetJackpot) === Math.round(jackpotNum) &&
+           (r.filledSeats + seatCount <= r.groupSize)
+    );
+
+    if (!room) {
+      room = await roomManager.createRoom(tierCategory, jackpotNum, sizeNum);
+    }
+
+    const { newBalance, assignedSeats } = await roomManager.joinRoom(room.id, userId, seatCount, mode, username, seatNumbers);
+
+    res.json({ success: true, balance: newBalance, assignedSeats, room: roomManager.rooms.get(room.id) || room });
   } catch (err) {
     console.error('create_and_join error:', err);
     res.status(400).json({ error: err.message });

@@ -1,16 +1,25 @@
 const { Pool } = require('pg');
 require('dotenv').config(); // Loads variables from .env
 
-// Create a new connection pool using environment variables
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'fastderash',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD,
-  max: process.env.DB_POOL_MAX || 10, // Max number of connections in the pool
-  idleTimeoutMillis: 30000,
-});
+// Create a new connection pool using environment variables or DATABASE_URL
+const poolConfig = process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+      max: parseInt(process.env.DB_POOL_MAX || '10', 10),
+      idleTimeoutMillis: 30000,
+    }
+  : {
+      host: process.env.DB_HOST || 'localhost',
+      port: process.env.DB_PORT || 5432,
+      database: process.env.DB_NAME || 'fastderash',
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD,
+      max: parseInt(process.env.DB_POOL_MAX || '10', 10),
+      idleTimeoutMillis: 30000,
+    };
+
+const pool = new Pool(poolConfig);
 
 // Test the connection
 pool.on('connect', () => {

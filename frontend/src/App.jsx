@@ -564,7 +564,7 @@ export default function App() {
                 : liveRealRooms.some(r => Math.round(r.targetJackpot) === Math.round(targetJackpot) && (r.status === 'open' || r.status === 'drawing'));
 
             if (!hasExactMatch) {
-                fetch('http://localhost:3000/api/v1/rooms/ensure', {
+                fetch(`${API_URL}/api/v1/rooms/ensure`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
@@ -1274,7 +1274,7 @@ export default function App() {
     };
 
     useEffect(() => {
-        fetch('http://localhost:3000/api/v1/config')
+        fetch(`${API_URL}/api/v1/config`)
             .then(res => res.json())
             .then(data => {
                 if (data.telebirrPhone || data.telebirrName) {
@@ -1288,7 +1288,7 @@ export default function App() {
 
         const currentUserId = user?.id;
         if (currentUserId) {
-            authFetch(`http://localhost:3000/api/v1/wallet/balance?mode=${mode}`)
+            authFetch(`${API_URL}/api/v1/wallet/balance?mode=${mode}`)
                 .then(res => res.json())
                 .then(data => {
                     if (data && data.balance !== undefined) {
@@ -1306,14 +1306,14 @@ export default function App() {
                 })
                 .catch(err => console.error(err));
 
-            authFetch(`http://localhost:3000/api/v1/wallet/transactions?mode=${mode}`)
+            authFetch(`${API_URL}/api/v1/wallet/transactions?mode=${mode}`)
                 .then(res => res.json())
                 .then(data => setWalletTransactions(Array.isArray(data) ? data : []))
                 .catch(err => console.error('Failed to fetch transactions:', err));
 
             fetchMyWithdrawals();
 
-            authFetch('http://localhost:3000/api/v1/user/invite')
+            authFetch(`${API_URL}/api/v1/user/invite`)
                 .then(res => res.json())
                 .then(data => {
                     if (data && data.hasRedeemed) {
@@ -1332,11 +1332,11 @@ export default function App() {
         document.body.addEventListener('touchstart', handleInteraction, { once: true });
         document.body.addEventListener('pointerdown', handleInteraction, { once: true });
 
-        fetch('http://localhost:3000/api/v1/rooms')
+        fetch(`${API_URL}/api/v1/rooms`)
             .then(res => res.json())
             .then(data => setRooms(data));
             
-        fetch('http://localhost:3000/api/v1/results')
+        fetch(`${API_URL}/api/v1/results`)
             .then(res => res.json())
             .then(data => setResults(data || []))
             .catch(err => console.error(err));
@@ -1511,7 +1511,7 @@ export default function App() {
         
         try {
             const endpoint = isLogin ? 'login' : 'register';
-            const res = await fetch(`http://localhost:3000/api/v1/auth/${endpoint}`, {
+            const res = await fetch(`${API_URL}/api/v1/auth/${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
@@ -1539,7 +1539,7 @@ export default function App() {
             return;
         }
         try {
-            const res = await fetch('http://localhost:3000/api/v1/auth/forgot-password', {
+            const res = await fetch(`${API_URL}/api/v1/auth/forgot-password`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ phoneNumber: formData.phoneNumber })
@@ -1578,7 +1578,7 @@ export default function App() {
             return;
         }
         try {
-            const res = await fetch('http://localhost:3000/api/v1/auth/reset-password', {
+            const res = await fetch(`${API_URL}/api/v1/auth/reset-password`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
@@ -1624,7 +1624,7 @@ export default function App() {
             return;
         }
         try {
-            const res = await authFetch('http://localhost:3000/api/v1/rooms/join', {
+            const res = await authFetch(`${API_URL}/api/v1/rooms/join`, {
                 method: 'POST',
                 body: JSON.stringify({
                     roomId: seatModal.room.id,
@@ -1682,7 +1682,7 @@ export default function App() {
 
         try {
             const endpoint = walletModal.action === 'deposit' ? 'deposit/telebirr' : walletModal.action;
-            const res = await authFetch(`http://localhost:3000/api/v1/wallet/${endpoint}`, {
+            const res = await authFetch(`${API_URL}/api/v1/wallet/${endpoint}`, {
                 method: 'POST',
                 body: JSON.stringify(payload)
             });
@@ -1728,7 +1728,7 @@ export default function App() {
 
         try {
             const endpoint = actionType === 'deposit' ? 'deposit/telebirr' : actionType;
-            const res = await authFetch(`http://localhost:3000/api/v1/wallet/${endpoint}`, {
+            const res = await authFetch(`${API_URL}/api/v1/wallet/${endpoint}`, {
                 method: 'POST',
                 body: JSON.stringify(payload)
             });
@@ -1745,7 +1745,7 @@ export default function App() {
                 }
                 
                 // Refresh transactions
-                authFetch(`http://localhost:3000/api/v1/wallet/transactions?mode=${mode}`)
+                authFetch(`${API_URL}/api/v1/wallet/transactions?mode=${mode}`)
                     .then(res => res.json())
                     .then(txData => setWalletTransactions(Array.isArray(txData) ? txData : []))
                     .catch(err => console.error(err));
@@ -1759,7 +1759,7 @@ export default function App() {
 
     const fetchMyWithdrawals = () => {
         if (!user) return;
-        authFetch('http://localhost:3000/api/v1/wallet/withdrawals')
+        authFetch(`${API_URL}/api/v1/wallet/withdrawals`)
             .then(res => res.json())
             .then(data => {
                 if (data && Array.isArray(data.requests)) {
@@ -1771,7 +1771,7 @@ export default function App() {
 
     const cancelWithdrawalRequest = async (requestId) => {
         try {
-            const res = await authFetch(`http://localhost:3000/api/v1/wallet/withdraw/${requestId}/cancel`, {
+            const res = await authFetch(`${API_URL}/api/v1/wallet/withdraw/${requestId}/cancel`, {
                 method: 'POST'
             });
             const data = await res.json();
@@ -1783,7 +1783,7 @@ export default function App() {
                     setUser(u => ({ ...u, balance: data.newBalance }));
                 }
                 fetchMyWithdrawals();
-                authFetch(`http://localhost:3000/api/v1/wallet/transactions?mode=${mode}`)
+                authFetch(`${API_URL}/api/v1/wallet/transactions?mode=${mode}`)
                     .then(res => res.json())
                     .then(txData => setWalletTransactions(Array.isArray(txData) ? txData : []))
                     .catch(() => {});
@@ -1806,7 +1806,7 @@ export default function App() {
         }
         setOrderLoading(true);
         try {
-            const res = await authFetch('http://localhost:3000/api/v1/wallet/order', {
+            const res = await authFetch(`${API_URL}/api/v1/wallet/order`, {
                 method: 'POST',
                 body: JSON.stringify({ amount: amountNum, mode })
             });
@@ -1839,7 +1839,7 @@ export default function App() {
     const handleUpdateProfile = async (e) => {
         e.preventDefault();
         try {
-            const res = await authFetch('http://localhost:3000/api/v1/auth/profile', {
+            const res = await authFetch(`${API_URL}/api/v1/auth/profile`, {
                 method: 'PUT',
                 body: JSON.stringify({ displayName: profileForm.displayName, password: profileForm.password })
             });
@@ -1874,7 +1874,7 @@ export default function App() {
         setInviteLoading(true);
         setInviteMessage(null);
         try {
-            const res = await authFetch('http://localhost:3000/api/v1/user/invite', {
+            const res = await authFetch(`${API_URL}/api/v1/user/invite`, {
                 method: 'POST',
                 body: JSON.stringify({ inviteCode: code })
             });
@@ -1900,7 +1900,7 @@ export default function App() {
             language === 'am' ? 'እርግጠኛ ነዎት መለያዎን በቋሚነት መሰረዝ ይፈልጋሉ? ይህ እርምጃ ሊመለስ አይችልም!' : 'Are you sure you want to completely delete your account? This cannot be undone!',
             async () => {
                 try {
-                    const res = await authFetch('http://localhost:3000/api/v1/auth/profile', {
+                    const res = await authFetch(`${API_URL}/api/v1/auth/profile`, {
                         method: 'DELETE'
                     });
                     const data = await res.json();
@@ -1920,7 +1920,7 @@ export default function App() {
     const executeOpenRoom = async () => {
         setConfirmOpenRoom(false);
         try {
-            const res = await authFetch('http://localhost:3000/api/v1/rooms/create_and_join', {
+            const res = await authFetch(`${API_URL}/api/v1/rooms/create_and_join`, {
                 method: 'POST',
                 body: JSON.stringify({
                     mode,
@@ -1952,7 +1952,7 @@ export default function App() {
         setDrawModal({ open: false, room: null, result: null });
         if (nextGameId) {
             try {
-                const res = await fetch(`http://localhost:3000/api/v1/rooms/${nextGameId}`);
+                const res = await fetch(`${API_URL}/api/v1/rooms/${nextGameId}`);
                 const nextRoom = await res.json();
                 if (nextRoom && !nextRoom.error) {
                     setActiveTab('rooms');

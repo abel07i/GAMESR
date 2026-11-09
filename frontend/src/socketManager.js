@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client';
+import { API_URL } from './config';
 
 let socketInstance = null;
 let listeners = new Map(); // Track registered listeners for cleanup
@@ -8,7 +9,7 @@ let listeners = new Map(); // Track registered listeners for cleanup
  */
 export function getSocket() {
   if (!socketInstance || !socketInstance.connected) {
-    socketInstance = io('http://localhost:3000', {
+    socketInstance = io(API_URL, {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,

@@ -1,4 +1,5 @@
-const BASE_URL = 'http://localhost:3000/api/v1/admin';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const BASE_URL = `${API_URL}/api/v1/admin`;
 
 function getToken() {
   return localStorage.getItem('admin_token');
@@ -64,6 +65,8 @@ const api = {
     const qs = new URLSearchParams(params).toString();
     return request('GET', `/transactions${qs ? '?' + qs : ''}`);
   },
+  deleteTransaction: (id) => request('DELETE', `/transactions/${id}`),
+  bulkDeleteTransactions: (ids) => request('POST', '/transactions/bulk-delete', { ids }),
   getWithdrawals: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return request('GET', `/withdrawals${qs ? '?' + qs : ''}`);

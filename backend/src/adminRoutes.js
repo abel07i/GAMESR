@@ -669,6 +669,67 @@ router.get('/transactions', adminMiddleware, async (req, res) => {
   }
 });
 
+// Single Delete Transaction
+router.delete('/transactions/:id', adminMiddleware, async (req, res) => {
+  const client = await db.getClient();
+  try {
+    const { id } = req.params;
+
+    await client.query('BEGIN');
+    await client.query("SET LOCAL app.allow_tx_delete = 'true'");
+
+    const delRes = await client.query('DELETE FROM transactions WHERE id = $1 RETURNING id', [id]);
+    if (delRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Transaction deleted successfully', id });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Delete transaction error:', err);
+    res.status(500).json({ error: err.message || 'Failed to delete transaction' });
+  } finally {
+    client.release();
+  }
+});
+
+// Bulk Delete Transactions
+router.post('/transactions/bulk-delete', adminMiddleware, async (req, res) => {
+  const client = await db.getClient();
+  try {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Please provide an array of transaction IDs to delete.' });
+    }
+
+    await client.query('BEGIN');
+    await client.query("SET LOCAL app.allow_tx_delete = 'true'");
+
+    const delRes = await client.query(
+      'DELETE FROM transactions WHERE id = ANY($1::uuid[]) RETURNING id',
+      [ids]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      deletedCount: delRes.rowCount,
+      deletedIds: delRes.rows.map(r => r.id)
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Bulk delete transactions error:', err);
+    res.status(500).json({ error: err.message || 'Failed to bulk delete transactions' });
+  } finally {
+    client.release();
+  }
+});
+
+
 // ── Profit / Revenue ──────────────────────────────────────────────────────────
 
 router.get('/profit/summary', adminMiddleware, async (req, res) => {

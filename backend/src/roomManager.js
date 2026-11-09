@@ -12,20 +12,42 @@ class RoomManager {
     this.io = io;
   }
 
-  // ─── Startup: Load all active rooms from DB into memory cache ─────────────
+  // ─── Startup: Load only live rooms with active bets/draws from DB ─────────────
   async loadActiveRooms() {
-    const res = await db.query('SELECT * FROM vw_active_rooms');
+    try {
+      // Clean up stale empty open rooms (0 tickets) from DB so DB stays lean
+      await db.query(`
+        DELETE FROM rooms 
+        WHERE status = 'open' 
+          AND id NOT IN (SELECT DISTINCT room_id FROM tickets WHERE is_refunded = FALSE)
+      `);
+    } catch (e) {
+      console.warn('Notice: Could not clean empty open rooms:', e.message);
+    }
+
+    // Only load rooms that are drawing OR open with actual joined bets/tickets
+    const res = await db.query(`
+      SELECT r.*,
+             COALESCE(
+               json_agg(
+                 json_build_object(
+                   'seatNumber', t.seat_number,
+                   'username', u.display_name,
+                   'userId', t.user_id
+                 )
+               ) FILTER (WHERE t.id IS NOT NULL), '[]'
+             ) AS seats_json
+      FROM vw_active_rooms r
+      LEFT JOIN tickets t ON t.room_id = r.id AND t.is_refunded = FALSE
+      LEFT JOIN users u ON u.id = t.user_id
+      WHERE r.status = 'drawing' OR (r.status = 'open' AND r.filled_seats > 0)
+      GROUP BY r.id, r.room_number, r.tier, r.target_jackpot, r.group_size, r.ticket_price,
+               r.filled_seats, r.seats_remaining, r.fill_percent, r.max_seats_per_player,
+               r.status, r.started_at, r.seconds_remaining
+    `);
+
     for (const r of res.rows) {
-      if (this.rooms.has(r.id)) continue;
-
-      // Fetch current tickets/seats for this room
-      const tRes = await db.query(`
-        SELECT t.seat_number, u.display_name AS username, t.user_id
-        FROM tickets t
-        JOIN users u ON u.id = t.user_id
-        WHERE t.room_id = $1 AND t.is_refunded = FALSE
-      `, [r.id]);
-
+      const seats = Array.isArray(r.seats_json) ? r.seats_json : [];
       const roomObj = {
         id: r.id,
         roomNumber: r.room_number,
@@ -33,15 +55,15 @@ class RoomManager {
         targetJackpot: parseFloat(r.target_jackpot),
         groupSize: r.group_size,
         ticketPrice: parseFloat(r.ticket_price),
-        filledSeats: tRes.rows.length,
+        filledSeats: seats.length,
         timeRemaining: Math.max(1, parseInt(r.seconds_remaining) || 60),
         maxSeatsPerUser: r.max_seats_per_player,
         status: r.status,
         createdAt: r.created_at || new Date().toISOString(),
-        seats: tRes.rows.map(t => ({
-          seatNumber: t.seat_number,
-          username: t.username,
-          userId: t.user_id
+        seats: seats.map(s => ({
+          seatNumber: s.seatNumber,
+          username: s.username,
+          userId: s.userId
         })),
         isProcessing: false
       };
@@ -49,8 +71,7 @@ class RoomManager {
       this.rooms.set(r.id, roomObj);
     }
 
-    console.log(`🗂️  Loaded ${this.rooms.size} active rooms into memory cache.`);
-    await this.ensureStarterRooms();
+    console.log(`🗂️  Loaded ${this.rooms.size} active rooms with players into memory cache.`);
     this.startTick();
   }
 
@@ -78,11 +99,6 @@ class RoomManager {
           groupSize: room.groupSize,
           playerCount: uniquePlayers
         });
-      }
-
-      // Auto-replenish starter rooms if needed
-      if (Math.random() < 0.1) {
-        this.ensureStarterRooms().catch(() => {});
       }
 
       // Check if all spaces are filled: game only begins when all seats are filled!
@@ -320,15 +336,12 @@ class RoomManager {
 
     // 1. Close player joining for this game
     room.status = 'drawing';
+    console.log(`🚀 Game #${room.roomNumber} started drawing!`);
 
-    // 2. Immediately create the next game cycle so other players can join the next round
-    const nextGame = await this.createRoom(room.tierCategory, room.targetJackpot, room.groupSize);
-    console.log(`🚀 Game #${room.roomNumber} started! Created next cycle Game #${nextGame.roomNumber} (ID: ${nextGame.id}).`);
-
-    // 3. Mark room as 'drawing' in PostgreSQL
+    // 2. Mark room as 'drawing' in PostgreSQL
     await db.query(`UPDATE rooms SET status = 'drawing', draw_started_at = NOW() WHERE id = $1`, [roomId]);
 
-    // 4. Broadcast game start to all clients
+    // 3. Broadcast game start to all clients
     if (this.io) {
       this.io.emit('draw:started', {
         roomId,
@@ -336,9 +349,7 @@ class RoomManager {
         totalSeats: room.filledSeats,
         groupSize: room.groupSize,
         tierCategory: room.tierCategory,
-        targetJackpot: room.targetJackpot,
-        nextGameId: nextGame.id,
-        nextRoomNumber: nextGame.roomNumber
+        targetJackpot: room.targetJackpot
       });
       this.io.emit('room:state_update', this.getRoomSummaries());
     }
@@ -484,40 +495,10 @@ class RoomManager {
       });
   }
 
-  // ─── Ensure rooms for 5, 10, 15, 20, 40, 50, 60, 80 are ALWAYS open ────────
+  // ─── Deprecated: Rooms are now created on-demand when users place bets ───
   async ensureStarterRooms() {
-    const starterConfigs = [
-      { size: 5,  jackpot: 500,  tier: 'starter' },
-      { size: 10, jackpot: 500,  tier: 'starter' },
-      { size: 15, jackpot: 500,  tier: 'starter' },
-      { size: 20, jackpot: 500,  tier: 'starter' },
-      { size: 40, jackpot: 500,  tier: 'starter' },
-      { size: 50, jackpot: 500,  tier: 'starter' },
-      { size: 60, jackpot: 500,  tier: 'starter' },
-      { size: 80, jackpot: 500,  tier: 'starter' },
-      { size: 5,  jackpot: 1000, tier: 'bronze' },
-      { size: 10, jackpot: 1000, tier: 'bronze' },
-      { size: 15, jackpot: 1000, tier: 'bronze' },
-      { size: 20, jackpot: 1000, tier: 'bronze' },
-      { size: 40, jackpot: 1000, tier: 'bronze' },
-      { size: 50, jackpot: 1000, tier: 'bronze' },
-      { size: 80, jackpot: 1000, tier: 'bronze' }
-    ];
-
-    let createdCount = 0;
-    for (const cfg of starterConfigs) {
-      const exists = Array.from(this.rooms.values()).some(
-        r => r.status === 'open' && r.groupSize === cfg.size && Math.round(r.targetJackpot) === Math.round(cfg.jackpot)
-      );
-      if (!exists) {
-        await this.createRoom(cfg.tier, cfg.jackpot, cfg.size);
-        createdCount++;
-      }
-    }
-
-    if (createdCount > 0) {
-      console.log(`✅ Ensured starter rooms: created ${createdCount} missing rooms.`);
-    }
+    // No-op: Rooms open when users bet, preventing database overhead
+    return;
   }
 }
 
