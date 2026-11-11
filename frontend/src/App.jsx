@@ -241,7 +241,7 @@ function formatAlertMessage(rawMessage, lang) {
     return msg;
 }
 
-const NavigationLinks = ({ activeTab, seatModal, t, setActiveTab }) => (
+const NavigationLinks = ({ activeTab, seatModal, t, setActiveTab, setSeatModal }) => (
     <>
         {[
             { id: 'home', key: 'home' },
@@ -1558,6 +1558,50 @@ export default function App() {
         showAlert(t('loginFirst'), 'warning');
     };
 
+    const getDefaultSeatQuota = (groupSize) => {
+        const quotas = { 5: 1, 10: 2, 15: 3, 20: 4, 30: 5, 40: 6, 50: 7, 60: 8, 70: 9, 80: 9 };
+        return quotas[groupSize] || (groupSize === 5 ? 1 : Math.floor(groupSize / 10) + 1);
+    };
+
+    const getTierCategory = (jackpotAmt) => {
+        if (jackpotAmt >= 100000) return 'gold';
+        if (jackpotAmt >= 10000) return 'silver';
+        if (jackpotAmt >= 1000) return 'bronze';
+        return 'starter';
+    };
+
+    const openRoomSeatPicker = (size, jackpotAmt) => {
+        const roomForSize = liveRealRooms.find(r =>
+            r.groupSize === size &&
+            Math.round(r.targetJackpot) === Math.round(jackpotAmt) &&
+            (r.status === 'open' || r.status === 'drawing')
+        );
+        if (roomForSize) {
+            if (roomForSize.status === 'drawing') {
+                setDrawModal({ open: true, room: roomForSize.id, roomNumber: roomForSize.roomNumber, groupSize: roomForSize.groupSize, result: null });
+            } else {
+                setSeatModal({ open: true, room: roomForSize, selectedSeats: [] });
+            }
+            return;
+        }
+        const draftRoom = {
+            id: `draft_${Math.round(jackpotAmt)}_${size}`,
+            isDraft: true,
+            roomNumber: 'NEW',
+            tierCategory: getTierCategory(jackpotAmt),
+            targetJackpot: jackpotAmt,
+            groupSize: size,
+            ticketPrice: Number((jackpotAmt / size).toFixed(2)),
+            filledSeats: 0,
+            playerCount: 0,
+            seats: [],
+            timeRemaining: 60,
+            maxSeatsPerUser: getDefaultSeatQuota(size),
+            status: 'open'
+        };
+        setSeatModal({ open: true, room: draftRoom, selectedSeats: [] });
+    };
+
     const buySeat = async () => {
         if (!user) {
             requireLogin();
@@ -1567,16 +1611,31 @@ export default function App() {
             showAlert('Please select at least one seat', 'warning');
             return;
         }
+        const targetRoom = activeRoom || seatModal.room;
+        if (!targetRoom) return;
+
         try {
-            const res = await authFetch(`${API_URL}/api/v1/rooms/join`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    roomId: seatModal.room.id,
+            const isDraft = Boolean(targetRoom.isDraft);
+            const url = isDraft ? `${API_URL}/api/v1/rooms/create_and_join` : `${API_URL}/api/v1/rooms/join`;
+            const bodyPayload = isDraft
+                ? {
+                    mode,
+                    username: user.name,
+                    groupSize: targetRoom.groupSize,
+                    seatNumbers: seatModal.selectedSeats,
+                    targetJackpot: targetRoom.targetJackpot
+                }
+                : {
+                    roomId: targetRoom.id,
                     seatCount: seatModal.selectedSeats.length,
                     mode,
                     username: user.name,
                     seatNumbers: seatModal.selectedSeats
-                })
+                };
+
+            const res = await authFetch(url, {
+                method: 'POST',
+                body: JSON.stringify(bodyPayload)
             });
             const data = await res.json();
             if (data.error) showAlert(data.error, 'warning');
@@ -1585,9 +1644,14 @@ export default function App() {
                 if (data.balance !== undefined) {
                     setUser(u => ({ ...u, balance: data.balance }));
                 } else {
-                    setUser(u => ({ ...u, balance: u.balance - (seatModal.room.ticketPrice * seatModal.selectedSeats.length) }));
+                    setUser(u => ({ ...u, balance: u.balance - (targetRoom.ticketPrice * seatModal.selectedSeats.length) }));
                 }
-                setSeatModal(prev => ({ ...prev, selectedSeats: [] }));
+                if (data.room) {
+                    setRooms(prev => [data.room, ...prev.filter(r => r.id !== data.room.id)]);
+                    setSeatModal({ open: true, room: data.room, selectedSeats: [] });
+                } else {
+                    setSeatModal(prev => ({ ...prev, selectedSeats: [] }));
+                }
             }
         } catch {
             showAlert('Purchase failed', 'error');
@@ -1867,7 +1931,18 @@ export default function App() {
 
     const userInviteCode = user ? `EQUB-${user.id.slice(0, 4).toUpperCase()}` : 'EQUB-7721';
 
-    const activeRoom = seatModal.open && seatModal.room ? (rooms.find(r => r.id === seatModal.room.id) || seatModal.room) : null;
+    const activeRoom = useMemo(() => {
+        if (!seatModal.open || !seatModal.room) return null;
+        if (seatModal.room.isDraft) {
+            const liveMatch = (rooms || []).find(r =>
+                (r.status === 'open' || r.status === 'drawing') &&
+                r.groupSize === seatModal.room.groupSize &&
+                Math.round(r.targetJackpot) === Math.round(seatModal.room.targetJackpot)
+            );
+            return liveMatch || seatModal.room;
+        }
+        return (rooms || []).find(r => r.id === seatModal.room.id) || seatModal.room;
+    }, [seatModal.open, seatModal.room, rooms]);
 
     return (
         <div className="flex min-h-dvh w-full flex-col font-sans bg-surface-950 text-white">
@@ -1897,7 +1972,7 @@ export default function App() {
                         </button>
                     </div>
                     <nav className="hidden items-center gap-1 lg:flex">
-                        <NavigationLinks activeTab={activeTab} seatModal={seatModal} t={t} setActiveTab={setActiveTab} />
+                        <NavigationLinks activeTab={activeTab} seatModal={seatModal} t={t} setActiveTab={setActiveTab} setSeatModal={setSeatModal} />
                     </nav>
                     <div className="flex shrink-0 items-center gap-2 sm:gap-3">
                         <div className="inline-flex rounded-full border border-white/10 bg-black/30 p-0.5 scale-90">
@@ -1928,7 +2003,7 @@ export default function App() {
                             </button>
                             <div className="flex items-center gap-1.5 sm:gap-2">
                                 <span className="font-mono text-[11px] sm:text-xs font-black text-gold-400 bg-gold-500/10 border border-gold-500/20 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg">
-                                    🎮 {t('gameLabel')}{activeRoom.roomNumber || activeRoom.id}
+                                    🎮 {activeRoom.isDraft ? (language === 'am' ? 'አዲስ ክፍል' : 'New Room') : `${t('gameLabel')}${activeRoom.roomNumber || activeRoom.id}`}
                                 </span>
                                 <span className="text-[9px] sm:text-[10px] font-bold text-white/50 uppercase tracking-wider bg-white/5 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-lg border border-white/5">
                                     {({
@@ -1949,7 +2024,7 @@ export default function App() {
                                 {t('realMoneyDesc')}
                             </p>
                             <p className="text-white/50 text-[9px] sm:text-[10px] font-medium mt-0 sm:mt-0.5">
-                                {`${language === 'am' ? 'ከፍተኛ' : 'Max'} ${activeRoom.maxSeatsPerUser || (activeRoom.groupSize === 5 ? 1 : Math.floor(activeRoom.groupSize / 10) + 1)} ${language === 'am' ? 'ምርጫ' : 'picks'} · ${activeRoom.ticketPrice % 1 === 0 ? activeRoom.ticketPrice.toLocaleString() : activeRoom.ticketPrice.toFixed(2)} ${language === 'am' ? 'ብር / ቁጥር · ሁሉም ሲሞሉ ይጀምራል' : 'Birr / number · starts when all seats filled'}`}
+                                {`${language === 'am' ? 'ከፍተኛ' : 'Max'} ${activeRoom.maxSeatsPerUser || getDefaultSeatQuota(activeRoom.groupSize)} ${language === 'am' ? 'ምርጫ' : 'picks'} · ${activeRoom.ticketPrice % 1 === 0 ? activeRoom.ticketPrice.toLocaleString() : activeRoom.ticketPrice.toFixed(2)} ${language === 'am' ? 'ብር / ቁጥር · ሁሉም ሲሞሉ ይጀምራል' : 'Birr / number · starts when all seats filled'}`}
                             </p>
                         </div>
 
@@ -2045,7 +2120,7 @@ export default function App() {
                         </div>
 
                         {(() => {
-                            const maxAllowed = activeRoom.maxSeatsPerUser || (activeRoom.groupSize === 5 ? 1 : Math.floor(activeRoom.groupSize / 10) + 1);
+                            const maxAllowed = activeRoom.maxSeatsPerUser || getDefaultSeatQuota(activeRoom.groupSize);
                             const myExistingSeatsCount = (activeRoom.seats || []).filter(s => user && s.userId === user.id).length;
                             const remainingAllowed = Math.max(0, maxAllowed - myExistingSeatsCount);
                             const totalBet = seatModal.selectedSeats.length * activeRoom.ticketPrice;
@@ -2466,10 +2541,11 @@ export default function App() {
                                         {/* ── PRIZE ENTRY & PLAYER DIVISION WIZARD ── */}
 
                                         {/* Step Indicator */}
-                                        <div className="flex items-center gap-1.5 sm:gap-3 px-0.5">
-                                            <div
+                                        <div className="flex items-center gap-1.5 sm:gap-3 px-0.5 select-none">
+                                            <button
+                                                type="button"
                                                 onClick={() => setWizardStep(1)}
-                                                className={`flex items-center gap-1 sm:gap-2 cursor-pointer transition ${wizardStep >= 1 ? 'opacity-100' : 'opacity-40'}`}
+                                                className={`flex items-center gap-1 sm:gap-2 cursor-pointer transition text-left ${wizardStep >= 1 ? 'opacity-100' : 'opacity-40'}`}
                                             >
                                                 <span className={`flex h-5 w-5 sm:h-7 sm:w-7 items-center justify-center rounded-full text-[10px] sm:text-xs font-black transition ${wizardStep === 1 ? 'bg-gold-500 text-black shadow-lg shadow-gold-500/40' : wizardStep > 1 ? 'bg-equb-500 text-white' : 'bg-white/10 text-white/50'}`}>
                                                     {wizardStep > 1 ? '✓' : '1'}
@@ -2477,16 +2553,20 @@ export default function App() {
                                                 <span className={`text-[11px] sm:text-xs font-bold truncate ${wizardStep === 1 ? 'text-gold-400' : wizardStep > 1 ? 'text-equb-400' : 'text-white/40'}`}>
                                                     {t('prizeEntry')}
                                                 </span>
-                                            </div>
+                                            </button>
                                             <div className={`flex-1 h-px ${wizardStep > 1 ? 'bg-equb-500/60' : 'bg-white/10'} transition-colors duration-300`}></div>
-                                            <div className={`flex items-center gap-1 sm:gap-2 ${wizardStep >= 2 ? 'opacity-100' : 'opacity-40'}`}>
+                                            <button
+                                                type="button"
+                                                onClick={() => setWizardStep(2)}
+                                                className={`flex items-center gap-1 sm:gap-2 cursor-pointer transition text-left ${wizardStep >= 2 ? 'opacity-100' : 'opacity-60 hover:opacity-100'}`}
+                                            >
                                                 <span className={`flex h-5 w-5 sm:h-7 sm:w-7 items-center justify-center rounded-full text-[10px] sm:text-xs font-black transition ${wizardStep === 2 ? 'bg-gold-500 text-black shadow-lg shadow-gold-500/40' : 'bg-white/10 text-white/50'}`}>
                                                     2
                                                 </span>
-                                                <span className={`text-[11px] sm:text-xs font-bold truncate ${wizardStep === 2 ? 'text-gold-400' : 'text-white/40'}`}>
+                                                <span className={`text-[11px] sm:text-xs font-bold truncate ${wizardStep === 2 ? 'text-gold-400' : 'text-white/60 hover:text-white'}`}>
                                                     {t('playersJoinLabel')}
                                                 </span>
-                                            </div>
+                                            </button>
                                         </div>
 
                                         {/* ── STEP 1: Choose Prize Entry ── */}
@@ -2598,21 +2678,8 @@ export default function App() {
                                                                     key={size}
                                                                     type="button"
                                                                     onClick={() => {
-                                                                        const updatedWizard = { ...wizard, groupSize: size, seatNumbers: [1] };
-                                                                        setWizard(updatedWizard);
-                                                                        const roomForSize = liveRealRooms.find(r =>
-                                                                            r.groupSize === size &&
-                                                                            Math.round(r.targetJackpot) === Math.round(wizard.jackpot) &&
-                                                                            (r.status === 'open' || r.status === 'drawing')
-                                                                        );
-                                                                        if (roomForSize) {
-                                                                            if (!user) { requireLogin(); return; }
-                                                                            if (roomForSize.status === 'drawing') {
-                                                                                setDrawModal({ open: true, room: roomForSize.id, roomNumber: roomForSize.roomNumber, result: null });
-                                                                            } else {
-                                                                                setSeatModal({ open: true, room: roomForSize, selectedSeats: [] });
-                                                                            }
-                                                                        }
+                                                                        setWizard({ ...wizard, groupSize: size, seatNumbers: [1] });
+                                                                        openRoomSeatPicker(size, wizard.jackpot);
                                                                     }}
                                                                     className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border transition-all active:scale-[0.99] text-left ${isSelected
                                                                             ? 'border-equb-400 bg-equb-500/10 ring-1 ring-equb-400/40 shadow-md shadow-equb-500/10'
@@ -2726,11 +2793,23 @@ export default function App() {
                                                                 </div>
                                                             </div>
                                                         ) : (
-                                                            <div className="border-t border-white/10 px-2 sm:px-3.5 py-2 flex items-center justify-between gap-2 bg-emerald-950/20">
+                                                            <div
+                                                                onClick={() => openRoomSeatPicker(wizard.groupSize, wizard.jackpot)}
+                                                                className="border-t border-white/10 px-2 sm:px-3.5 py-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 bg-emerald-950/20 hover:bg-emerald-900/30 cursor-pointer transition"
+                                                            >
                                                                 <div className="flex items-center gap-1.5 text-[10px] sm:text-xs text-emerald-400">
-                                                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                                                                    <span className="font-semibold">{t('loadingRoom')}</span>
+                                                                    <span className="w-1.5 h-1.5 rounded-full bg-gold-400"></span>
+                                                                    <span className="font-semibold text-white/80">
+                                                                        {language === 'am' ? 'ክፍል ክፈትና ቁጥር ምረጥ' : 'Ready to open · Pick your numbers'}
+                                                                    </span>
                                                                 </div>
+                                                                <button
+                                                                    type="button"
+                                                                    className="px-2.5 py-1 sm:px-3.5 sm:py-1.5 rounded-lg sm:rounded-xl bg-gradient-to-r from-gold-400 to-gold-500 hover:from-gold-300 hover:to-gold-400 text-black font-black text-[10px] sm:text-xs shadow-md shadow-gold-500/20 transition active:scale-95 flex items-center justify-center gap-1"
+                                                                >
+                                                                    <span>🎮</span>
+                                                                    <span>{t('playBtn')}</span>
+                                                                </button>
                                                             </div>
                                                         )}
                                                         {isFull && (
@@ -2744,7 +2823,7 @@ export default function App() {
                                         })()}
                                     </div>
 
-                                    <div className={`col-span-6 sm:col-span-5 min-w-0 ${wizardStep === 2 ? 'hidden sm:block sm:col-span-4' : ''}`}>
+                                    <div className={wizardStep === 1 ? 'col-span-6 sm:col-span-5 min-w-0' : 'hidden'}>
                                         <div className="lg:sticky lg:top-24 space-y-3 sm:space-y-4">
                                             {/* Main Box matching user screenshot */}
                                             <div className="rounded-xl sm:rounded-3xl border border-emerald-950/80 bg-[#06120d] p-2 sm:p-5 relative overflow-hidden shadow-2xl">
