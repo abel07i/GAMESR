@@ -11,12 +11,27 @@ const roomManager  = require('./src/roomManager');
 const adminRoutes  = require('./src/adminRoutes');
 const { generateToken, verifyToken, hashPassword, verifyPassword } = require('./src/adminAuth');
 
-const app    = express();
-const server = http.createServer(app);
-const io     = new Server(server, { cors: { origin: '*' } });
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+  : '*';
 
-app.use(cors());
+const app    = express();
+app.set('trust proxy', 1);
+const server = http.createServer(app);
+const io     = new Server(server, { cors: { origin: allowedOrigins } });
+
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
+
+// Health check for load balancers, reverse proxies, and uptime monitors
+app.get('/api/v1/health', async (req, res) => {
+  try {
+    await db.query('SELECT 1');
+    res.json({ status: 'ok', database: 'connected', uptime: Math.floor(process.uptime()) });
+  } catch {
+    res.status(503).json({ status: 'error', database: 'disconnected' });
+  }
+});
 
 // ── Admin API Routes ──────────────────────────────────────────────────────────
 app.use('/api/v1/admin', adminRoutes);

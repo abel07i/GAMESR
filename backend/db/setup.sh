@@ -56,6 +56,12 @@ echo "3. Loading seed data..."
 psql -d "$DB_NAME" -f "$SCRIPT_DIR/seed.sql" -v ON_ERROR_STOP=1
 echo "   ✅ Seed data loaded"
 
+# Run post-schema sync migration (withdrawals, system_config, telegram reset, updated stored procs)
+echo ""
+echo "4. Running post-schema sync migration..."
+psql -d "$DB_NAME" -f "$SCRIPT_DIR/post_schema_sync.sql" -v ON_ERROR_STOP=1
+echo "   ✅ Post-schema sync applied"
+
 # Print summary
 echo ""
 echo "═══════════════════════════════════════════════════"

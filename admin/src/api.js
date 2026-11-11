@@ -1,4 +1,7 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const defaultApiUrl = import.meta.env.DEV
+  ? 'http://localhost:3000'
+  : (typeof window !== 'undefined' ? window.location.origin : '');
+const API_URL = import.meta.env.VITE_API_URL || defaultApiUrl;
 const BASE_URL = `${API_URL}/api/v1/admin`;
 
 function getToken() {

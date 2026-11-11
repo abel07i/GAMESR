@@ -88,6 +88,17 @@ if ($LASTEXITCODE -eq 0) {
     exit 1
 }
 
+# Step 4: Run post-schema sync migration
+Write-Host ""
+Write-Host "4. Applying post-schema sync migration..." -ForegroundColor Cyan
+& psql -U postgres -d $DB_NAME -f "$SCRIPT_DIR\post_schema_sync.sql" -v ON_ERROR_STOP=1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "   [SUCCESS] Post-schema sync applied" -ForegroundColor Green
+} else {
+    Write-Host "   [ERROR] Post-schema sync failed!" -ForegroundColor Red
+    exit 1
+}
+
 # Summary
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Cyan

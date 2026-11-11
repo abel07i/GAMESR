@@ -8,12 +8,12 @@ let listeners = new Map(); // Track registered listeners for cleanup
  * Initialize or get the socket connection (singleton pattern with proper cleanup)
  */
 export function getSocket() {
-  if (!socketInstance || !socketInstance.connected) {
-    socketInstance = io(API_URL, {
+  if (!socketInstance) {
+    socketInstance = io(API_URL || undefined, {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      reconnectionAttempts: 5
+      reconnectionAttempts: Infinity
     });
   }
   return socketInstance;

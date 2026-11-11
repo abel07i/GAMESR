@@ -3,7 +3,11 @@
  * Uses environment variables with fallbacks for development
  */
 
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const defaultApiUrl = import.meta.env.DEV
+  ? 'http://localhost:3000'
+  : (typeof window !== 'undefined' ? window.location.origin : '');
+
+export const API_URL = import.meta.env.VITE_API_URL || defaultApiUrl;
 export const API_TIMEOUT = parseInt(import.meta.env.VITE_API_TIMEOUT || '30000');
 
 /**
