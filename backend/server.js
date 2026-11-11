@@ -1,27 +1,59 @@
 const express = require('express');
-const http    = require('http');
+const http = require('http');
 const { Server } = require('socket.io');
-const path   = require('path');
-const fs     = require('fs');
-const cors   = require('cors');
+const path = require('path');
+const fs = require('fs');
+const cors = require('cors');
+const crypto = require('crypto');
 
-const db           = require('./src/db');
+const db = require('./src/db');
 const walletLedger = require('./src/walletLedger');
-const roomManager  = require('./src/roomManager');
-const adminRoutes  = require('./src/adminRoutes');
+const roomManager = require('./src/roomManager');
+const adminRoutes = require('./src/adminRoutes');
 const { generateToken, verifyToken, hashPassword, verifyPassword } = require('./src/adminAuth');
+const { isValidUuid, createRateLimiter, securityHeaders, verifyTelebirrReceiver } = require('./src/security');
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
   : '*';
 
-const app    = express();
+const app = express();
+app.disable('x-powered-by');
 app.set('trust proxy', 1);
 const server = http.createServer(app);
-const io     = new Server(server, { cors: { origin: allowedOrigins } });
+const io = new Server(server, { cors: { origin: allowedOrigins } });
 
+app.use(securityHeaders);
 app.use(cors({ origin: allowedOrigins }));
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
+
+// Rate limiters for auth & financial routes
+const loginLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  keyGenerator: (req) => `${req.ip}:login:${String(req.body?.phoneNumber || '').trim()}`,
+  message: 'Too many login attempts. Please try again in a few minutes.'
+});
+const registerLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: 'Too many registration attempts from this IP.'
+});
+const forgotPwLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Too many password reset requests. Please try again later.'
+});
+const resetPwLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: 'Too many verification code attempts. Please try again later.'
+});
+const walletLimiter = createRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  max: 25,
+  message: 'Too many wallet requests. Please slow down.'
+});
 
 // Health check for load balancers, reverse proxies, and uptime monitors
 app.get('/api/v1/health', async (req, res) => {
@@ -115,11 +147,21 @@ async function fetchWithTimeout(url, options = {}, ms = 15000) {
 
 // ── Auth Routes ───────────────────────────────────────────────────────────────
 
-app.post('/api/v1/auth/register', async (req, res) => {
+app.post('/api/v1/auth/register', registerLimiter, async (req, res) => {
   try {
-    const { phoneNumber, displayName, password, telegramId } = req.body;
+    const phoneNumber = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+    const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const telegramId = typeof req.body?.telegramId === 'string' && req.body.telegramId.trim() ? req.body.telegramId.trim() : null;
+
     if (!phoneNumber || !displayName || !password)
       return res.status(400).json({ error: 'All fields are required' });
+    if (phoneNumber.length < 9 || phoneNumber.length > 20)
+      return res.status(400).json({ error: 'Please enter a valid phone number' });
+    if (displayName.length < 2 || displayName.length > 50)
+      return res.status(400).json({ error: 'Display name must be between 2 and 50 characters' });
+    if (password.length < 6 || password.length > 128)
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
     const passwordHash = await hashPassword(password);
 
@@ -139,7 +181,7 @@ app.post('/api/v1/auth/register', async (req, res) => {
     const userRes = await db.query(
       `INSERT INTO users (phone_number, display_name, password_hash, role, telegram_id)
        VALUES ($1, $2, $3, 'player', $4) RETURNING id`,
-      [phoneNumber, displayName, passwordHash, telegramId || null]
+      [phoneNumber, displayName, passwordHash, telegramId]
     );
     const userId = userRes.rows[0].id;
 
@@ -154,9 +196,10 @@ app.post('/api/v1/auth/register', async (req, res) => {
   }
 });
 
-app.post('/api/v1/auth/login', async (req, res) => {
+app.post('/api/v1/auth/login', loginLimiter, async (req, res) => {
   try {
-    const { phoneNumber, password } = req.body;
+    const phoneNumber = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
     if (!phoneNumber || !password)
       return res.status(400).json({ error: 'All fields are required' });
 
@@ -179,7 +222,7 @@ app.post('/api/v1/auth/login', async (req, res) => {
     // Transparently upgrade legacy SHA-256 hash to bcrypt
     if (!user.password_hash.startsWith('$2')) {
       const upgraded = await hashPassword(password);
-      await db.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [upgraded, user.id]).catch(() => {});
+      await db.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [upgraded, user.id]).catch(() => { });
     }
     const balance = await walletLedger.getBalance(user.id, 'real');
     const token = generatePlayerToken(user.id);
@@ -201,6 +244,12 @@ app.put('/api/v1/auth/profile', playerMiddleware, async (req, res) => {
     const cleanName = typeof displayName === 'string' ? displayName.trim() : '';
     if (!cleanName && !password) {
       return res.status(400).json({ error: 'Display name or password is required' });
+    }
+    if (cleanName && (cleanName.length < 2 || cleanName.length > 50)) {
+      return res.status(400).json({ error: 'Display name must be between 2 and 50 characters' });
+    }
+    if (password && (typeof password !== 'string' || password.length < 6 || password.length > 128)) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
     const fields = [];
@@ -237,57 +286,80 @@ app.delete('/api/v1/auth/profile', playerMiddleware, async (req, res) => {
 // ── Forgot Password Routes ────────────────────────────────────────────────────
 
 // Request password reset - sends verification code via Telegram DM
-app.post('/api/v1/auth/forgot-password', async (req, res) => {
+app.post('/api/v1/auth/forgot-password', forgotPwLimiter, async (req, res) => {
   try {
-    const { phoneNumber } = req.body;
-    
+    const phoneNumber = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+
     // Find user by phone number
-    const userResult = await db.query('SELECT id, telegram_id FROM users WHERE phone_number = $1', [phoneNumber]);
+    const userResult = await db.query('SELECT id, telegram_id, is_active FROM users WHERE phone_number = $1', [phoneNumber]);
     if (userResult.rowCount === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     const user = userResult.rows[0];
-    
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Your account has been suspended. Please contact support.' });
+    }
+
     // Check if user has Telegram ID linked
     if (!user.telegram_id) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'No Telegram account linked. Please open @fasterekub_bot to link your account or register with your Telegram ID.',
         needsSetup: true,
         needsTelegramLink: true,
         botLink: 'https://t.me/fasterekub_bot'
       });
     }
-    
-    // Generate 6-digit verification code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Enforce server-side 60-second resend cooldown per account
+    const recentCode = await db.query(
+      `SELECT created_at FROM password_reset_codes
+       WHERE user_id = $1 AND created_at > NOW() - INTERVAL '60 seconds'
+       ORDER BY created_at DESC LIMIT 1`,
+      [user.id]
+    );
+    if (recentCode.rowCount > 0) {
+      return res.status(429).json({
+        error: 'Please wait 60 seconds before requesting another verification code.',
+        cooldownSeconds: 60
+      });
+    }
+
+    // Invalidate any previous unused codes for this user
+    await db.query('UPDATE password_reset_codes SET used = TRUE WHERE user_id = $1 AND used = FALSE', [user.id]);
+
+    // Generate cryptographically secure 6-digit verification code
+    const code = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-    
+
     // Store code in database
     await db.query(
       'INSERT INTO password_reset_codes (user_id, code, expires_at) VALUES ($1, $2, $3)',
       [user.id, code, expiresAt]
     );
-    
+
     // Send code directly to user via Telegram DM (private message)
     const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
-    
+
     if (telegramBotToken && telegramBotToken !== 'YOUR_BOT_TOKEN_HERE') {
       const https = require('https');
-      
+
       // Format message for direct message to user
       const message = `🔐 *Fast Equb Password Reset*\n\n` +
-                     `Your verification code is: \`${code}\`\n\n` +
-                     `This code will expire in 10 minutes.\n\n` +
-                     `⚠️ Never share this code with anyone.\n` +
-                     `If you didn't request this, please ignore.`;
-      
+        `Your verification code is: \`${code}\`\n\n` +
+        `This code will expire in 10 minutes.\n\n` +
+        `⚠️ Never share this code with anyone.\n` +
+        `If you didn't request this, please ignore.`;
+
       const payload = JSON.stringify({
         chat_id: user.telegram_id,
         text: message,
         parse_mode: 'Markdown'
       });
-      
+
       const options = {
         hostname: 'api.telegram.org',
         port: 443,
@@ -298,7 +370,7 @@ app.post('/api/v1/auth/forgot-password', async (req, res) => {
           'Content-Length': Buffer.byteLength(payload)
         }
       };
-      
+
       const telegramSuccess = await new Promise((resolve) => {
         const telegramReq = https.request(options, (telegramRes) => {
           let responseData = '';
@@ -324,28 +396,28 @@ app.post('/api/v1/auth/forgot-password', async (req, res) => {
             }
           });
         });
-        
+
         telegramReq.on('error', (e) => {
           console.error('Failed to send Telegram message:', e);
           resolve({ success: false, error: e.message });
         });
-        
+
         telegramReq.write(payload);
         telegramReq.end();
       });
-      
+
       if (!telegramSuccess.success) {
         console.log('Telegram send failed:', telegramSuccess.error);
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: telegramSuccess.error,
           needsStart: telegramSuccess.needsStart,
           botLink: 'https://t.me/fasterekub_bot'
         });
       }
     }
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: 'Verification code sent to your Telegram account',
       cooldownSeconds: 60,
       expiresIn: 600
@@ -356,38 +428,58 @@ app.post('/api/v1/auth/forgot-password', async (req, res) => {
   }
 });
 
-// Reset password with verification code
-app.post('/api/v1/auth/reset-password', async (req, res) => {
+// Reset password with verification code (with strict brute-force lockout after 5 wrong guesses)
+app.post('/api/v1/auth/reset-password', resetPwLimiter, async (req, res) => {
   try {
-    const { phoneNumber, code, newPassword } = req.body;
-    
+    const phoneNumber = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+    const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+
+    if (!phoneNumber || !code || !newPassword) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+    if (newPassword.length < 6 || newPassword.length > 128) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+
     // Find user
     const userResult = await db.query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
     if (userResult.rowCount === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     const userId = userResult.rows[0].id;
-    
-    // Verify code
-    const codeResult = await db.query(
-      'SELECT id FROM password_reset_codes WHERE user_id = $1 AND code = $2 AND used = FALSE AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1',
-      [userId, code]
+
+    // Fetch latest active reset code for this user
+    const latestCodeRes = await db.query(
+      'SELECT id, code, attempts FROM password_reset_codes WHERE user_id = $1 AND used = FALSE AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1',
+      [userId]
     );
-    
-    if (codeResult.rowCount === 0) {
+
+    if (latestCodeRes.rowCount === 0) {
       return res.status(400).json({ error: 'Invalid or expired verification code' });
     }
-    
-    const codeId = codeResult.rows[0].id;
-    
-    // Update password
+
+    const activeReset = latestCodeRes.rows[0];
+    if (activeReset.attempts >= 5) {
+      await db.query('UPDATE password_reset_codes SET used = TRUE WHERE id = $1', [activeReset.id]);
+      return res.status(429).json({ error: 'Too many failed verification attempts. Please request a new code.' });
+    }
+
+    if (activeReset.code !== code) {
+      const nextAttempts = (activeReset.attempts || 0) + 1;
+      await db.query(
+        'UPDATE password_reset_codes SET attempts = $1, used = $2 WHERE id = $3',
+        [nextAttempts, nextAttempts >= 5, activeReset.id]
+      );
+      return res.status(400).json({ error: 'Invalid or expired verification code' });
+    }
+
+    // Update password and invalidate all unused codes for this user
     const passwordHash = await hashPassword(newPassword);
     await db.query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2', [passwordHash, userId]);
-    
-    // Mark code as used
-    await db.query('UPDATE password_reset_codes SET used = TRUE WHERE id = $1', [codeId]);
-    
+    await db.query('UPDATE password_reset_codes SET used = TRUE WHERE user_id = $1 AND used = FALSE', [userId]);
+
     res.json({ success: true, message: 'Password reset successfully' });
   } catch (err) {
     console.error('Reset password error:', err);
@@ -412,12 +504,12 @@ app.get('/api/v1/user/invite', playerMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/v1/user/invite', playerMiddleware, async (req, res) => {
+app.post('/api/v1/user/invite', playerMiddleware, walletLimiter, async (req, res) => {
   try {
     const userId = req.playerId;
     const { inviteCode } = req.body;
     if (!inviteCode || !inviteCode.trim()) return res.status(400).json({ error: 'Invite code is required' });
-    
+
     const code = inviteCode.trim().toUpperCase();
 
     // Prevent user from redeeming their own invite code
@@ -500,8 +592,7 @@ app.get('/api/v1/config', async (req, res) => {
 app.get('/api/v1/wallet/balance', playerMiddleware, async (req, res) => {
   try {
     const userId = req.playerId;
-    const { mode = 'real' } = req.query;
-    const balance = await walletLedger.getBalance(userId, mode);
+    const balance = await walletLedger.getBalance(userId, 'real');
     res.json({ balance });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch balance' });
@@ -510,16 +601,29 @@ app.get('/api/v1/wallet/balance', playerMiddleware, async (req, res) => {
 
 // Direct deposit endpoint removed for security. All deposits must go through telebirr verification.
 
-app.post('/api/v1/wallet/deposit/telebirr', playerMiddleware, async (req, res) => {
+app.post('/api/v1/wallet/deposit/telebirr', playerMiddleware, walletLimiter, async (req, res) => {
   try {
     const userId = req.playerId;
-    const { transactionId, mode = 'real' } = req.body;
-    
-    if (!transactionId) throw new Error('Transaction ID is required');
+    const rawTxId = typeof req.body?.transactionId === 'string' ? req.body.transactionId.trim().toUpperCase() : '';
+    const mode = 'real'; // Strictly enforce real money mode
 
-    const apiKeyResult = await db.query("SELECT config_value FROM system_config WHERE config_key = 'VERIFY_ET_API_KEY'");
-    const apiKey = apiKeyResult.rows.length > 0 && apiKeyResult.rows[0].config_value ? apiKeyResult.rows[0].config_value : process.env.VERIFY_ET_API_KEY;
+    if (!rawTxId || !/^[A-Z0-9_-]{4,64}$/.test(rawTxId)) {
+      throw new Error('Please enter a valid Telebirr Transaction ID');
+    }
 
+    // Fast pre-check before hitting payment verification API
+    const dupCheck = await db.query('SELECT 1 FROM external_deposits WHERE UPPER(transaction_id) = $1', [rawTxId]);
+    if (dupCheck.rowCount > 0) {
+      throw new Error('This Telebirr transaction has already been used.');
+    }
+
+    const cfgResult = await db.query(
+      "SELECT config_key, config_value FROM system_config WHERE config_key IN ('VERIFY_ET_API_KEY', 'TELEBIRR_PHONE', 'TELEBIRR_NAME')"
+    );
+    const cfgMap = {};
+    for (const r of cfgResult.rows) cfgMap[r.config_key] = r.config_value;
+
+    const apiKey = cfgMap.VERIFY_ET_API_KEY || process.env.VERIFY_ET_API_KEY;
     if (!apiKey) {
       throw new Error('Payment gateway configuration error. Please contact support.');
     }
@@ -531,27 +635,31 @@ app.post('/api/v1/wallet/deposit/telebirr', playerMiddleware, async (req, res) =
         'Content-Type': 'application/json',
         'x-api-key': apiKey
       },
-      body: JSON.stringify({ reference: transactionId, bank: 'telebirr' })
+      body: JSON.stringify({ reference: rawTxId, bank: 'telebirr' })
     }, 15000);
 
     let verifyData = await response.json();
-    
+
     if (!response.ok || verifyData.success === false) {
-       throw new Error(verifyData.message || 'Failed to start transaction verification');
+      throw new Error(verifyData.message || 'Failed to start transaction verification');
     }
 
-    // If API queues the request, we must poll the statusUrl
+    // If API queues the request, we must poll the statusUrl (restricted strictly to https://verify.et)
     if (verifyData.verification && verifyData.verification.processingStatus === 'queued' && verifyData.statusUrl) {
       let retries = 10;
       let completed = false;
-      const statusUrl = verifyData.statusUrl.startsWith('http') ? verifyData.statusUrl : `https://verify.et${verifyData.statusUrl}`;
-      
+      const statusUrl = verifyData.statusUrl.startsWith('http')
+        ? verifyData.statusUrl
+        : `https://verify.et${verifyData.statusUrl}`;
+      if (!statusUrl.startsWith('https://verify.et/')) {
+        throw new Error('Invalid payment verification status URL');
+      }
+
       while (retries > 0 && !completed) {
         await new Promise(r => setTimeout(r, 2000)); // wait 2 seconds between polls
-        // 8-second timeout per poll attempt
         const pollRes = await fetchWithTimeout(statusUrl, { headers: { 'x-api-key': apiKey } }, 8000);
         const pollData = await pollRes.json();
-        
+
         if (pollData.data && pollData.data.processingStatus === 'completed') {
           verifyData = pollData;
           completed = true;
@@ -560,27 +668,33 @@ app.post('/api/v1/wallet/deposit/telebirr', playerMiddleware, async (req, res) =
         }
         retries--;
       }
-      
+
       if (!completed) {
-         throw new Error('Verification timed out after multiple attempts. Please try again later.');
+        throw new Error('Verification timed out after multiple attempts. Please try again later.');
       }
     }
 
     const finalResult = verifyData.data && verifyData.data.result ? verifyData.data.result : {};
-    
+
     if (verifyData.data && verifyData.data.status !== 'success' && finalResult.status !== 'success' && finalResult.verified !== true) {
-       throw new Error(finalResult.errorMessage || 'Invalid or unverified transaction');
+      throw new Error(finalResult.errorMessage || 'Invalid or unverified transaction');
+    }
+
+    const receiverCheck = verifyTelebirrReceiver(verifyData, cfgMap.TELEBIRR_PHONE, cfgMap.TELEBIRR_NAME);
+    if (!receiverCheck.valid) {
+      throw new Error(receiverCheck.reason);
     }
 
     let depositedAmount = finalResult.amount || (finalResult.transaction && finalResult.transaction.amount) || verifyData.data.amount;
-    
-    if (!depositedAmount || parseFloat(depositedAmount) <= 0) {
-       throw new Error('Transaction verified but could not parse amount securely');
+    const parsedAmount = Number(depositedAmount);
+
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || parsedAmount > 500000) {
+      throw new Error('Transaction verified but could not parse amount securely');
     }
 
-    const balance = await walletLedger.depositTelebirr(userId, transactionId, parseFloat(depositedAmount), mode);
-    
-    res.json({ success: true, balance, depositedAmount });
+    const balance = await walletLedger.depositTelebirr(userId, rawTxId, parsedAmount, mode);
+
+    res.json({ success: true, balance, depositedAmount: parsedAmount });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -613,18 +727,16 @@ app.post('/api/v1/wallet/order', playerMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/v1/wallet/withdraw', playerMiddleware, async (req, res) => {
+app.post('/api/v1/wallet/withdraw', playerMiddleware, walletLimiter, async (req, res) => {
   const client = await db.getClient();
   try {
     const userId = req.playerId;
-    const { amount, mode = 'real', phoneNumber, paymentMethod = 'telebirr', accountHolderName } = req.body;
-    
-    if (mode !== 'real') {
-      return res.status(400).json({ error: 'Withdrawals are only permitted in Real Money mode.' });
-    }
+    const { amount, phoneNumber, paymentMethod = 'telebirr', accountHolderName } = req.body;
+    const mode = 'real'; // Withdrawals strictly in real money mode
 
-    const withdrawAmount = Math.round(parseFloat(amount) * 100) / 100;
-    if (isNaN(withdrawAmount) || !isFinite(withdrawAmount) || withdrawAmount <= 0) {
+    const rawAmount = Number(amount);
+    const withdrawAmount = Math.round(rawAmount * 100) / 100;
+    if (!Number.isFinite(withdrawAmount) || withdrawAmount <= 0) {
       return res.status(400).json({ error: 'Please enter a valid withdrawal amount.' });
     }
 
@@ -635,7 +747,7 @@ app.post('/api/v1/wallet/withdraw', playerMiddleware, async (req, res) => {
     );
     const configMap = {};
     configRes.rows.forEach(r => configMap[r.config_key] = parseFloat(r.config_value));
-    
+
     const minAmount = configMap['MIN_WITHDRAWAL_AMOUNT'] || 10;
     const maxAmount = configMap['MAX_WITHDRAWAL_AMOUNT'] || 50000;
     const maxPending = configMap['MAX_PENDING_WITHDRAWALS'] || 1;
@@ -650,28 +762,15 @@ app.post('/api/v1/wallet/withdraw', playerMiddleware, async (req, res) => {
     // 2. Lookup user & validate phone
     const userRes = await client.query(`SELECT phone_number, display_name FROM users WHERE id = $1`, [userId]);
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found.' });
-    
-    const phone = (phoneNumber || userRes.rows[0].phone_number || '').trim();
-    if (!phone || phone.length < 9) {
+
+    const phone = (typeof phoneNumber === 'string' && phoneNumber.trim()) ? phoneNumber.trim() : (userRes.rows[0].phone_number || '').trim();
+    if (!phone || phone.length < 9 || phone.length > 20) {
       return res.status(400).json({ error: 'A valid Telebirr phone number is required for payout.' });
     }
 
-    // 3. Enforce maximum pending withdrawals limit
-    const pendingRes = await client.query(
-      `SELECT COUNT(*) FROM withdrawal_requests WHERE user_id = $1 AND status = 'pending'`,
-      [userId]
-    );
-    const pendingCount = parseInt(pendingRes.rows[0].count, 10);
-    if (pendingCount >= maxPending) {
-      return res.status(400).json({ 
-        error: `You already have ${pendingCount} pending withdrawal request. Please wait for it to be processed or cancel it before submitting a new one.` 
-      });
-    }
-
-    // 4. ATOMIC DATABASE TRANSACTION
+    // 3. ATOMIC DATABASE TRANSACTION (Lock wallet FIRST to serialize concurrent withdrawal attempts)
     await client.query('BEGIN');
 
-    // Lock wallet FOR UPDATE to strictly prevent concurrent double-spending
     const walletRes = await client.query(
       `SELECT id, balance, total_withdrawn FROM wallets WHERE user_id = $1 AND mode = 'real' FOR UPDATE`,
       [userId]
@@ -681,11 +780,24 @@ app.post('/api/v1/wallet/withdraw', playerMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Real money wallet not found.' });
     }
 
+    // 4. Enforce maximum pending withdrawals limit INSIDE the wallet lock to prevent concurrent bypass
+    const pendingRes = await client.query(
+      `SELECT COUNT(*) FROM withdrawal_requests WHERE user_id = $1 AND status = 'pending'`,
+      [userId]
+    );
+    const pendingCount = parseInt(pendingRes.rows[0].count, 10);
+    if (pendingCount >= maxPending) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `You already have ${pendingCount} pending withdrawal request. Please wait for it to be processed or cancel it before submitting a new one.`
+      });
+    }
+
     const currentBalance = parseFloat(walletRes.rows[0].balance);
     if (currentBalance < withdrawAmount) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ 
-        error: `Insufficient balance. Your current balance is ${currentBalance.toFixed(2)} ETB.` 
+      return res.status(400).json({
+        error: `Insufficient balance. Your current balance is ${currentBalance.toFixed(2)} ETB.`
       });
     }
 
@@ -729,7 +841,7 @@ app.post('/api/v1/wallet/withdraw', playerMiddleware, async (req, res) => {
       message: `Withdrawal request for ${withdrawAmount} ETB submitted successfully.`
     });
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => { });
     console.error('User withdrawal error:', err);
     res.status(400).json({ error: err.message || 'Withdrawal request failed.' });
   } finally {
@@ -776,11 +888,14 @@ app.get('/api/v1/wallet/withdrawals', playerMiddleware, async (req, res) => {
 });
 
 // User Cancel Pending Withdrawal (Instantly refunds funds to player wallet)
-app.post('/api/v1/wallet/withdraw/:id/cancel', playerMiddleware, async (req, res) => {
+app.post('/api/v1/wallet/withdraw/:id/cancel', playerMiddleware, walletLimiter, async (req, res) => {
   const client = await db.getClient();
   try {
     const userId = req.playerId;
     const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid withdrawal request ID.' });
+    }
 
     await client.query('BEGIN');
 
@@ -798,8 +913,8 @@ app.post('/api/v1/wallet/withdraw/:id/cancel', playerMiddleware, async (req, res
     const request = reqRes.rows[0];
     if (request.status !== 'pending') {
       await client.query('ROLLBACK');
-      return res.status(400).json({ 
-        error: `Cannot cancel request. It has already been ${request.status}.` 
+      return res.status(400).json({
+        error: `Cannot cancel request. It has already been ${request.status}.`
       });
     }
 
@@ -835,7 +950,7 @@ app.post('/api/v1/wallet/withdraw/:id/cancel', playerMiddleware, async (req, res
       requestId: id
     });
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => { });
     console.error('Cancel withdrawal error:', err);
     res.status(400).json({ error: err.message || 'Failed to cancel withdrawal request.' });
   } finally {
@@ -873,7 +988,7 @@ app.get('/api/v1/wallet/transactions', playerMiddleware, async (req, res) => {
   try {
     const userId = req.playerId;
     const { mode = 'real' } = req.query;
-    
+
     // Fetch transactions from the ledger view
     const result = await db.query(`
       SELECT t.id, t.tx_type, t.amount, t.direction, t.running_balance, t.created_at, t.reference_note 
@@ -883,7 +998,7 @@ app.get('/api/v1/wallet/transactions', playerMiddleware, async (req, res) => {
       ORDER BY t.created_at DESC
       LIMIT 50
     `, [userId, mode]);
-    
+
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch transaction history' });
@@ -935,26 +1050,38 @@ app.post('/api/v1/rooms/create_and_join', playerMiddleware, async (req, res) => 
   let room = null;
   try {
     const userId = req.playerId;
-    const { mode = 'real', username, groupSize, seatNumbers, targetJackpot } = req.body;
+    const { username, groupSize, seatNumbers, targetJackpot } = req.body;
+    const mode = 'real'; // Strictly enforce real money mode
 
-    const sizeNum = parseInt(groupSize, 10);
-    const jackpotNum = parseFloat(targetJackpot);
-    if (isNaN(sizeNum) || sizeNum < 2 || isNaN(jackpotNum) || jackpotNum <= 0) {
+    const sizeNum = Number(groupSize);
+    const jackpotNum = Number(targetJackpot);
+    if (!Number.isInteger(sizeNum) || sizeNum < 2 || sizeNum > 100 || !Number.isFinite(jackpotNum) || jackpotNum <= 0 || jackpotNum > 10000000) {
       return res.status(400).json({ error: 'Valid group size and target jackpot are required' });
     }
-    const seatCount = Array.isArray(seatNumbers) && seatNumbers.length > 0 ? seatNumbers.length : 1;
+
+    let cleanSeats = null;
+    if (seatNumbers !== undefined && seatNumbers !== null) {
+      if (!Array.isArray(seatNumbers) || seatNumbers.length === 0) {
+        return res.status(400).json({ error: 'Invalid seat numbers selection' });
+      }
+      cleanSeats = seatNumbers.map(Number);
+      if (cleanSeats.some(s => !Number.isInteger(s) || s < 1 || s > sizeNum) || new Set(cleanSeats).size !== cleanSeats.length) {
+        return res.status(400).json({ error: 'Seat numbers must be distinct integers within room capacity' });
+      }
+    }
+    const seatCount = cleanSeats ? cleanSeats.length : 1;
 
     let tierCategory = 'starter';
     if (jackpotNum >= 100000) tierCategory = 'gold';
     else if (jackpotNum >= 10000) tierCategory = 'silver';
-    else if (jackpotNum >= 1000)  tierCategory = 'bronze';
+    else if (jackpotNum >= 1000) tierCategory = 'bronze';
 
     // Check if an open room matching this prize and player count already exists
     room = Array.from(roomManager.rooms.values()).find(
       r => r.status === 'open' &&
-           r.groupSize === sizeNum &&
-           Math.round(r.targetJackpot) === Math.round(jackpotNum) &&
-           (r.filledSeats + seatCount <= r.groupSize)
+        r.groupSize === sizeNum &&
+        Math.round(r.targetJackpot) === Math.round(jackpotNum) &&
+        (r.filledSeats + seatCount <= r.groupSize)
     );
 
     if (!room) {
@@ -962,13 +1089,13 @@ app.post('/api/v1/rooms/create_and_join', playerMiddleware, async (req, res) => 
       createdNow = true;
     }
 
-    const { newBalance, assignedSeats } = await roomManager.joinRoom(room.id, userId, seatCount, mode, username, seatNumbers);
+    const { newBalance, assignedSeats } = await roomManager.joinRoom(room.id, userId, seatCount, mode, username, cleanSeats);
 
     res.json({ success: true, balance: newBalance, assignedSeats, room: roomManager.rooms.get(room.id) || room });
   } catch (err) {
     // Roll back orphan empty room if creation succeeded but joining failed (e.g. insufficient balance)
     if (createdNow && room && room.filledSeats === 0) {
-      await roomManager.deleteRoom(room.id).catch(() => {});
+      await roomManager.deleteRoom(room.id).catch(() => { });
     }
     console.error('create_and_join error:', err);
     res.status(400).json({ error: err.message });
@@ -979,8 +1106,29 @@ app.post('/api/v1/rooms/create_and_join', playerMiddleware, async (req, res) => 
 app.post('/api/v1/rooms/join', playerMiddleware, async (req, res) => {
   try {
     const userId = req.playerId;
-    const { roomId, seatCount = 1, mode = 'real', username, seatNumbers } = req.body;
-    const { newBalance, assignedSeats } = await roomManager.joinRoom(roomId, userId, seatCount, mode, username, seatNumbers);
+    const { roomId, seatCount = 1, username, seatNumbers } = req.body;
+    const mode = 'real'; // Strictly enforce real money mode
+
+    if (!isValidUuid(roomId)) {
+      return res.status(400).json({ error: 'Invalid room ID' });
+    }
+
+    let cleanSeats = null;
+    let countNum = Number(seatCount);
+    if (seatNumbers !== undefined && seatNumbers !== null) {
+      if (!Array.isArray(seatNumbers) || seatNumbers.length === 0) {
+        return res.status(400).json({ error: 'Invalid seat numbers selection' });
+      }
+      cleanSeats = seatNumbers.map(Number);
+      if (cleanSeats.some(s => !Number.isInteger(s) || s < 1) || new Set(cleanSeats).size !== cleanSeats.length) {
+        return res.status(400).json({ error: 'Seat numbers must be distinct positive integers' });
+      }
+      countNum = cleanSeats.length;
+    } else if (!Number.isInteger(countNum) || countNum < 1 || countNum > 20) {
+      return res.status(400).json({ error: 'Seat count must be a positive integer' });
+    }
+
+    const { newBalance, assignedSeats } = await roomManager.joinRoom(roomId, userId, countNum, mode, username, cleanSeats);
     const balance = newBalance ?? await walletLedger.getBalance(userId, mode);
     res.json({ success: true, balance, assignedSeats });
   } catch (err) {
@@ -1036,13 +1184,17 @@ io.on('connection', (socket) => {
   // Immediately push live room list to new connection
   socket.emit('room:state_update', roomManager.getRoomSummaries());
 
-  // Allow clients to subscribe to a specific room channel
-  socket.on('room:subscribe', ({ roomId }) => {
-    socket.join(`room_${roomId}`);
+  // Allow clients to subscribe to a specific room channel (guarded against malformed payloads)
+  socket.on('room:subscribe', (payload) => {
+    if (payload && isValidUuid(payload.roomId)) {
+      socket.join(`room_${payload.roomId}`);
+    }
   });
 
-  socket.on('room:unsubscribe', ({ roomId }) => {
-    socket.leave(`room_${roomId}`);
+  socket.on('room:unsubscribe', (payload) => {
+    if (payload && isValidUuid(payload.roomId)) {
+      socket.leave(`room_${payload.roomId}`);
+    }
   });
 });
 

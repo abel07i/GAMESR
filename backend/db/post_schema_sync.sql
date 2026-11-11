@@ -75,8 +75,11 @@ CREATE TABLE IF NOT EXISTS password_reset_codes (
     code       VARCHAR(6) NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     used       BOOLEAN NOT NULL DEFAULT FALSE,
+    attempts   INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE password_reset_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_password_reset_codes_user_id ON password_reset_codes(user_id);
 CREATE INDEX IF NOT EXISTS idx_password_reset_codes_expires_at ON password_reset_codes(expires_at);
@@ -121,6 +124,11 @@ DECLARE
     v_seat          INTEGER;
     v_occupied      INTEGER[];
 BEGIN
+    IF p_seat_count IS NULL OR p_seat_count < 1 THEN
+        RETURN QUERY SELECT FALSE, 'Seat count must be at least 1'::TEXT, 0::NUMERIC(14,2), 0::NUMERIC(14,2), '{}'::INTEGER[];
+        RETURN;
+    END IF;
+
     SELECT r.*, sq.max_seats_per_user AS quota_max
     INTO v_room
     FROM rooms r
@@ -320,6 +328,106 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION public.fn_wallet_deposit(
+    p_user_id     uuid,
+    p_amount      numeric,
+    p_mode        account_mode,
+    p_idempotency character varying DEFAULT NULL::character varying
+)
+RETURNS TABLE(success boolean, new_balance numeric)
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+    v_wallet  RECORD;
+    v_new_bal NUMERIC(14,2);
+BEGIN
+    IF p_amount IS NULL OR p_amount <= 0 THEN
+        RETURN QUERY SELECT FALSE, 0::NUMERIC(14,2);
+        RETURN;
+    END IF;
+
+    IF p_idempotency IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM transactions WHERE idempotency_key = p_idempotency) THEN
+            SELECT w.balance INTO v_new_bal FROM wallets w WHERE user_id = p_user_id AND mode = p_mode;
+            RETURN QUERY SELECT TRUE, v_new_bal;
+            RETURN;
+        END IF;
+    END IF;
+
+    SELECT * INTO v_wallet FROM wallets WHERE user_id = p_user_id AND mode = p_mode FOR UPDATE;
+    IF NOT FOUND THEN
+        INSERT INTO wallets (user_id, mode, balance, total_deposited)
+        VALUES (p_user_id, p_mode, p_amount, p_amount)
+        RETURNING * INTO v_wallet;
+        v_new_bal := p_amount;
+    ELSE
+        v_new_bal := v_wallet.balance + p_amount;
+        UPDATE wallets
+        SET balance         = v_new_bal,
+            total_deposited = total_deposited + p_amount,
+            updated_at      = NOW()
+        WHERE id = v_wallet.id;
+    END IF;
+
+    INSERT INTO transactions (wallet_id, tx_type, amount, direction, running_balance, reference_note, idempotency_key)
+    VALUES (v_wallet.id, 'deposit', p_amount, 1, v_new_bal, 'Wallet deposit', p_idempotency);
+
+    RETURN QUERY SELECT TRUE, v_new_bal;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.fn_wallet_withdraw(
+    p_user_id     uuid,
+    p_amount      numeric,
+    p_mode        account_mode,
+    p_idempotency character varying DEFAULT NULL::character varying
+)
+RETURNS TABLE(success boolean, error_message text, new_balance numeric)
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+    v_wallet  RECORD;
+    v_new_bal NUMERIC(14,2);
+BEGIN
+    IF p_amount IS NULL OR p_amount <= 0 THEN
+        RETURN QUERY SELECT FALSE, 'Withdrawal amount must be positive'::TEXT, 0::NUMERIC(14,2);
+        RETURN;
+    END IF;
+
+    IF p_idempotency IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM transactions WHERE idempotency_key = p_idempotency) THEN
+            SELECT w.balance INTO v_new_bal FROM wallets w WHERE user_id = p_user_id AND mode = p_mode;
+            RETURN QUERY SELECT TRUE, NULL::TEXT, v_new_bal;
+            RETURN;
+        END IF;
+    END IF;
+
+    SELECT * INTO v_wallet FROM wallets WHERE user_id = p_user_id AND mode = p_mode FOR UPDATE;
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'Wallet not found'::TEXT, 0::NUMERIC(14,2);
+        RETURN;
+    END IF;
+
+    IF v_wallet.balance < p_amount THEN
+        RETURN QUERY SELECT FALSE, 'Insufficient balance'::TEXT, v_wallet.balance;
+        RETURN;
+    END IF;
+
+    v_new_bal := v_wallet.balance - p_amount;
+
+    UPDATE wallets
+    SET balance         = v_new_bal,
+        total_withdrawn = total_withdrawn + p_amount,
+        updated_at      = NOW()
+    WHERE id = v_wallet.id;
+
+    INSERT INTO transactions (wallet_id, tx_type, amount, direction, running_balance, reference_note, idempotency_key)
+    VALUES (v_wallet.id, 'withdrawal', p_amount, -1, v_new_bal, 'Wallet withdrawal', p_idempotency);
+
+    RETURN QUERY SELECT TRUE, NULL::TEXT, v_new_bal;
+END;
+$function$;
+
 CREATE OR REPLACE FUNCTION public.fn_wallet_refund(
     p_user_id     uuid,
     p_amount      numeric,
@@ -334,6 +442,11 @@ DECLARE
     v_wallet  RECORD;
     v_new_bal NUMERIC(14,2);
 BEGIN
+    IF p_amount IS NULL OR p_amount <= 0 THEN
+        RETURN QUERY SELECT FALSE, 0::NUMERIC(14,2);
+        RETURN;
+    END IF;
+
     IF p_idempotency IS NOT NULL THEN
         IF EXISTS (SELECT 1 FROM transactions WHERE idempotency_key = p_idempotency) THEN
             SELECT w.balance INTO v_new_bal FROM wallets w WHERE user_id = p_user_id AND mode = p_mode;

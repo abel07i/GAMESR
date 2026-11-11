@@ -1,27 +1,32 @@
-require('dotenv').config();
-const { Pool } = require('pg');
-const crypto = require('crypto');
+const db = require('./src/db');
+const { hashPassword } = require('./src/adminAuth');
 
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD
-});
+async function setupAdmin() {
+  const phoneNumber = process.env.ADMIN_PHONE || process.argv[2] || '+251900000000';
+  const password = process.env.ADMIN_PASSWORD || process.argv[3];
 
-const pw = crypto.createHash('sha256').update('admin123').digest('hex');
+  if (!password || password.length < 10) {
+    console.error('❌ Usage: node setup_admin.js <phoneNumber> <strongPassword>');
+    console.error('   Or set ADMIN_PASSWORD (>= 10 characters) in environment.');
+    process.exit(1);
+  }
 
-pool.query(`
-  INSERT INTO users (display_name, phone_number, password_hash, role) 
-  VALUES ('Super Admin', '+251900000000', $1, 'admin') 
-  ON CONFLICT (phone_number) 
-  DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin'
-  RETURNING *;
-`, [pw]).then(res => {
-  console.log('Admin user created/updated:', res.rows[0]);
-  process.exit(0);
-}).catch(err => {
-  console.error('Error inserting admin:', err);
-  process.exit(1);
-});
+  try {
+    const pwHash = await hashPassword(password);
+    const res = await db.query(
+      `INSERT INTO users (display_name, phone_number, password_hash, role)
+       VALUES ('Super Admin', $1, $2, 'admin')
+       ON CONFLICT (phone_number)
+       DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin', is_active = TRUE
+       RETURNING id, display_name, phone_number, role`,
+      [phoneNumber, pwHash]
+    );
+    console.log('✅ Admin user created/updated securely:', res.rows[0]);
+    process.exit(0);
+  } catch (err) {
+    console.error('❌ Error creating admin:', err.message);
+    process.exit(1);
+  }
+}
+
+setupAdmin();

@@ -268,14 +268,17 @@ class RoomManager {
 
   // ─── Join a Room — Enforces limits & atomic seat allocation ────────────────
   async joinRoom(roomId, userId, seatCount, mode, username = 'Anonymous', requestedSeats = null) {
+    if (!Number.isInteger(seatCount) || seatCount < 1) {
+      throw new Error('Seat count must be a positive integer.');
+    }
     const room = this.rooms.get(roomId);
     if (!room) throw new Error('Game not found');
     if (room.status !== 'open') throw new Error(`Game #${room.roomNumber} has already started and closed joining.`);
 
-    // Enforce real player validation: reject any bot or non-registered account
-    const userCheck = await db.query('SELECT role, display_name FROM users WHERE id = $1', [userId]);
-    if (userCheck.rows.length === 0 || userCheck.rows[0].role !== 'player') {
-      throw new Error('Only registered real players can join games.');
+    // Enforce real, active player validation: reject bots, blocked users, or non-registered accounts
+    const userCheck = await db.query('SELECT role, display_name, is_active FROM users WHERE id = $1', [userId]);
+    if (userCheck.rows.length === 0 || userCheck.rows[0].role !== 'player' || userCheck.rows[0].is_active === false) {
+      throw new Error('Only active registered real players can join games.');
     }
     if (userCheck.rows[0].display_name) {
       username = userCheck.rows[0].display_name;

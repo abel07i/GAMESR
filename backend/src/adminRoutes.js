@@ -2,17 +2,33 @@ const express = require('express');
 const router = express.Router();
 const db = require('./db');
 const { hashPassword, verifyPassword, generateToken, adminMiddleware } = require('./adminAuth');
+const { isValidUuid, createRateLimiter } = require('./security');
+
+const adminLoginLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => `${req.ip}:adminlogin:${String(req.body?.phoneNumber || '').trim()}`,
+  message: 'Too many admin login attempts. Please wait 15 minutes.'
+});
+
+router.param('id', (req, res, next, id) => {
+  if (!isValidUuid(id)) {
+    return res.status(400).json({ error: 'Invalid ID format' });
+  }
+  next();
+});
 
 // ── Admin Auth ────────────────────────────────────────────────────────────────
 
-router.post('/auth/login', async (req, res) => {
+router.post('/auth/login', adminLoginLimiter, async (req, res) => {
   try {
-    const { phoneNumber, password } = req.body;
+    const phoneNumber = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
     if (!phoneNumber || !password)
       return res.status(400).json({ error: 'Phone number and password required' });
 
     const result = await db.query(
-      `SELECT id, display_name, phone_number, password_hash, role FROM users
+      `SELECT id, display_name, phone_number, password_hash, role, is_active FROM users
        WHERE phone_number = $1 AND role = 'admin'`,
       [phoneNumber]
     );
@@ -21,6 +37,9 @@ router.post('/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials or not an admin' });
 
     const admin = result.rows[0];
+    if (admin.is_active === false) {
+      return res.status(403).json({ error: 'Admin account is deactivated' });
+    }
     const isMatch = await verifyPassword(password, admin.password_hash);
     if (!isMatch)
       return res.status(401).json({ error: 'Invalid credentials or not an admin' });
