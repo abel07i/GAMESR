@@ -32,7 +32,7 @@ export default function Sidebar() {
   return (
     <div className="sidebar">
       <div className="sidebar-logo">
-        <img src="/logo.png" alt="Logo" style={{ width: 44, height: "auto" }} />
+        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Logo" style={{ width: 44, height: "auto" }} />
         <div>
           <h1>ፋስት እቁብ</h1>
           <span>Admin Panel</span>

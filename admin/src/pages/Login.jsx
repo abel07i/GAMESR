@@ -30,7 +30,7 @@ export default function Login() {
     <div className="login-page">
       <div className="login-card">
         <div className="login-logo">
-          <img src="/logo.png" alt="Logo" style={{ width: 64, height: "auto", marginBottom: 16 }} />
+          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Logo" style={{ width: 64, height: "auto", marginBottom: 16 }} />
           <h1>ፋስት እቁብ Admin</h1>
           <p>Sign in to manage your platform</p>
         </div>

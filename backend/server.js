@@ -36,12 +36,21 @@ app.get('/api/v1/health', async (req, res) => {
 // ── Admin API Routes ──────────────────────────────────────────────────────────
 app.use('/api/v1/admin', adminRoutes);
 
+// Serve built admin panel at /admin (production)
+const adminDistPath = path.join(__dirname, '../admin/dist');
+if (fs.existsSync(adminDistPath)) {
+  app.use('/admin', express.static(adminDistPath));
+  app.get(['/admin', '/admin/*'], (req, res) => {
+    res.sendFile(path.join(adminDistPath, 'index.html'));
+  });
+}
+
 // Serve built frontend (production)
 const distPath = path.join(__dirname, '../frontend/dist');
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io') || req.path.startsWith('/admin')) return next();
     res.sendFile(path.join(distPath, 'index.html'));
   });
 }
