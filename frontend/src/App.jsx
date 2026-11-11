@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { getSocket, onSocketEvent, offSocketEvent, cleanupSocket } from './socketManager';
 import { fetchWithTimeout, API_URL } from './config';
+import PasswordResetModal from './components/PasswordResetModal';
 
 let audioCtx = null;
 const initAudio = () => {
@@ -379,6 +380,7 @@ export default function App() {
         }
     }, [seatModal.open, drawModal.open]);
     const [confirmOpenRoom, setConfirmOpenRoom] = useState(false);
+    const [walletModal, setWalletModal] = useState({ open: false, action: null, amount: '', transactionId: '', loading: false });
     const [walletTabState, setWalletTabState] = useState({ active: 'deposit', amount: '', transactionId: '', phone: '', loading: false });
     const [myWithdrawals, setMyWithdrawals] = useState([]);
     const [orderAmount, setOrderAmount] = useState(100);
@@ -2006,7 +2008,7 @@ export default function App() {
                         {!user ? (
                             <button onClick={() => { setActiveTab('home'); setIsLogin(true); }} className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-medium text-equb-400 hover:bg-white/5">{t('loginBtn')}</button>
                         ) : (
-                            <div className="text-xs text-emerald-400 font-bold">{user.balance.toLocaleString()} ETB</div>
+                            <div className="text-xs text-emerald-400 font-bold">{(user.balance != null ? Number(user.balance).toLocaleString() : '0')} ETB</div>
                         )}
                     </div>
                 </div>
@@ -2484,96 +2486,27 @@ export default function App() {
                                             </div>
                                         ) : (
                                             <div>
-                                                <h2 className="mb-3 text-sm font-bold text-equb-200">{isForgotPassword ? t('resetPass') : t('loginOrReg')}</h2>
+                                                <h2 className="mb-3 text-sm font-bold text-equb-200">{t('loginOrReg')}</h2>
                                                 <div className="space-y-4">
-                                                    {!isForgotPassword && (
-                                                        <div className="flex gap-1 rounded-2xl border border-white/10 bg-black/30 p-1">
-                                                            <button type="button" onClick={() => setIsLogin(true)} className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition ${isLogin ? 'bg-equb-600 text-white shadow' : 'text-white/45 hover:text-white/70'}`}>{t('login')}</button>
-                                                            <button type="button" onClick={() => setIsLogin(false)} className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition ${!isLogin ? 'bg-equb-600 text-white shadow' : 'text-white/45 hover:text-white/70'}`}>{t('register')}</button>
-                                                        </div>
-                                                    )}
+                                                    <div className="flex gap-1 rounded-2xl border border-white/10 bg-black/30 p-1">
+                                                        <button type="button" onClick={() => setIsLogin(true)} className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition ${isLogin ? 'bg-equb-600 text-white shadow' : 'text-white/45 hover:text-white/70'}`}>{t('login')}</button>
+                                                        <button type="button" onClick={() => setIsLogin(false)} className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition ${!isLogin ? 'bg-equb-600 text-white shadow' : 'text-white/45 hover:text-white/70'}`}>{t('register')}</button>
+                                                    </div>
                                                     
-                                                    {isForgotPassword ? (
-                                                        resetStep === 1 ? (
-                                                            <form className="space-y-3" onSubmit={handleForgotPasswordRequest}>
-                                                                <input type="text" placeholder={t('phone')} required value={formData.phoneNumber} onChange={e => setFormData({...formData, phoneNumber: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                                <div className="rounded-xl border border-equb-500/20 bg-equb-500/5 p-3 space-y-2">
-                                                                    <p className="text-[11px] font-bold text-equb-300 flex items-center gap-1.5">
-                                                                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-                                                                        {language === 'am' ? 'እንዴት እንደሚሰራ' : 'How it works'}
-                                                                    </p>
-                                                                    <ol className="space-y-1.5 text-[10px] text-white/60 leading-relaxed">
-                                                                        <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-equb-500/30 text-[9px] font-bold text-equb-300">1</span><span>{language === 'am' ? 'በመመዝገብ ጊዜ የተጠቀሙበትን ስልክ ቁጥር ያስገቡ' : 'Enter the phone number you used during registration'}</span></li>
-                                                                        <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-equb-500/30 text-[9px] font-bold text-equb-300">2</span><span>{language === 'am' ? 'የማረጋገጫ ኮድ ወደ ቴሌግራም መለያዎ @fasterekub_bot ይላካል' : 'A verification code will be sent to your Telegram via @fasterekub_bot'}</span></li>
-                                                                        <li className="flex gap-2"><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-equb-500/30 text-[9px] font-bold text-equb-300">3</span><span>{language === 'am' ? 'ኮዱን ያስገቡና አዲስ የይለፍ ቃል ያስቀምጡ' : 'Enter the code and set your new password'}</span></li>
-                                                                    </ol>
-                                                                    <p className="text-[10px] text-white/50 mt-2">
-                                                                        {language === 'am' ? '⚠️ የቴሌግራም መለያ ካልተገናኘ እንደገና ይመዝገቡ' : '⚠️ If no Telegram linked, please re-register with Telegram ID'}
-                                                                    </p>
-                                                                </div>
-                                                                <button type="submit" className="btn-gold w-full py-3.5 text-sm mt-2">{t('sendCode')}</button>
-                                                                <button type="button" onClick={() => { setIsForgotPassword(false); setResetStep(1); }} className="w-full text-center text-xs text-white/50 hover:text-white/80 transition">{t('backToLogin')}</button>
-                                                            </form>
-                                                        ) : (
-                                                            <form className="space-y-3" onSubmit={handlePasswordReset}>
-                                                                <input type="text" placeholder={t('verificationCode')} required value={resetCode} onChange={e => setResetCode(e.target.value)} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                                <input type="password" placeholder={t('newPassword')} required value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                                <input type="password" placeholder={t('confirmPass')} required value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                                <button type="submit" className="btn-gold w-full py-3.5 text-sm mt-2">{t('resetPassword')}</button>
-                                                                <button type="button" onClick={() => { setIsForgotPassword(false); setResetStep(1); }} className="w-full text-center text-xs text-white/50 hover:text-white/80 transition">{t('backToLogin')}</button>
-                                                            </form>
-                                                        )
-                                                    ) : (
-                                                        <form className="space-y-3" onSubmit={handleAuth}>
-                                                            {!isLogin && (
-                                                                <input type="text" placeholder={t('fullName')} required value={formData.displayName} onChange={e => setFormData({...formData, displayName: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                            )}
-                                                            <input type="text" placeholder={t('phone')} required value={formData.phoneNumber} onChange={e => setFormData({...formData, phoneNumber: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                            <input type="password" placeholder={t('pass')} required value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                            {!isLogin && (
-                                                                <>
-                                                                    <input type="password" placeholder={t('confirmPass')} required value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
-                                                                    {/* Telegram ID field with how-it-works info */}
-                                                                    <div className="rounded-xl border border-blue-500/25 bg-blue-500/5 p-3 space-y-2.5">
-                                                                        {/* Header */}
-                                                                        <p className="text-[11px] font-bold text-blue-300 flex items-center gap-1.5">
-                                                                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
-                                                                            {language === 'am' ? 'ቴሌግራም መለያ (ለይለፍ ቃል መልሶ ማግኛ)' : 'Telegram ID (for password recovery)'}
-                                                                        </p>
-                                                                        {/* Input */}
-                                                                        <input
-                                                                            type="text"
-                                                                            placeholder={language === 'am' ? 'ቴሌግራም ID (ቁጥር ብቻ)' : 'Telegram ID (numbers only)'}
-                                                                            value={formData.telegramId}
-                                                                            onChange={e => setFormData({...formData, telegramId: e.target.value})}
-                                                                            className="w-full rounded-xl border border-blue-500/20 bg-black/40 px-4 py-2.5 text-sm text-white placeholder-white/30 focus:border-blue-400/50 focus:outline-none focus:ring-1 focus:ring-blue-400/40 transition"
-                                                                        />
-
-                                                                        {/* Warning + userinfobot link */}
-                                                                        <div className="rounded-lg bg-amber-500/8 border border-amber-500/20 px-2.5 py-2 flex flex-col gap-1.5">
-                                                                            <p className="text-[10px] text-amber-300/80 flex items-start gap-1.5">
-                                                                                <span className="shrink-0 mt-0.5">⚠️</span>
-                                                                                <span>{language === 'am' ? 'ቴሌግራም ID ካልሞሉ፣ የይለፍ ቃል ሲረሱ ማስመለስ አይቻልም!' : 'Without a Telegram ID, password recovery will not work!'}</span>
-                                                                            </p>
-                                                                            <a
-                                                                                href="https://t.me/userinfobot"
-                                                                                target="_blank"
-                                                                                rel="noopener noreferrer"
-                                                                                className="inline-flex items-center gap-1.5 self-start rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 px-2.5 py-1 text-[10px] font-bold text-blue-300 hover:text-blue-200 transition"
-                                                                            >
-                                                                                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
-                                                                                {language === 'am' ? '@userinfobot ን ክፈቱ — ID ይሰጥዎታል' : 'Open @userinfobot — it gives you your ID'}
-                                                                            </a>
-                                                                        </div>
-                                                                    </div>
-                                                                </>
-                                                            )}
-                                                            {isLogin && (
-                                                                <button type="button" onClick={() => setIsForgotPassword(true)} className="w-full text-right text-xs text-equb-400 hover:text-equb-300 transition">{t('forgotPass')}</button>
-                                                            )}
-                                                            <button type="submit" className="btn-gold w-full py-3.5 text-sm mt-2">{isLogin ? t('loginBtn') : t('regBtn')}</button>
-                                                        </form>
-                                                    )}
+                                                    <form className="space-y-3" onSubmit={handleAuth}>
+                                                        {!isLogin && (
+                                                            <input type="text" placeholder={t('fullName')} required value={formData.displayName} onChange={e => setFormData({...formData, displayName: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
+                                                        )}
+                                                        <input type="text" placeholder={t('phone')} required value={formData.phoneNumber} onChange={e => setFormData({...formData, phoneNumber: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
+                                                        <input type="password" placeholder={t('pass')} required value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
+                                                        {!isLogin && (
+                                                            <input type="password" placeholder={t('confirmPass')} required value={formData.confirmPassword} onChange={e => setFormData({...formData, confirmPassword: e.target.value})} className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/30 focus:border-equb-500/50 focus:outline-none focus:ring-1 focus:ring-equb-500/50 transition" />
+                                                        )}
+                                                        {isLogin && (
+                                                            <button type="button" onClick={() => setIsForgotPassword(true)} className="w-full text-right text-xs text-equb-400 hover:text-equb-300 transition">{t('forgotPass')}</button>
+                                                        )}
+                                                        <button type="submit" className="btn-gold w-full py-3.5 text-sm mt-2">{isLogin ? t('loginBtn') : t('regBtn')}</button>
+                                                    </form>
                                                 </div>
                                             </div>
                                         )}
@@ -3069,7 +3002,7 @@ export default function App() {
                     <div className="space-y-4 max-w-lg mx-auto animate-fade-in pb-24">
                         <div className="glass-strong p-4 sm:p-5 rounded-2xl border border-white/10 shadow-xl">
                             <p className="text-white/50 text-[11px] uppercase tracking-wider font-semibold mb-0.5 text-center">{t('balance')}</p>
-                            <h1 className="text-2xl sm:text-3xl font-black text-emerald-400 mb-4 text-center tracking-tight">{user ? user.balance.toLocaleString() : 0} ETB</h1>
+                            <h1 className="text-2xl sm:text-3xl font-black text-emerald-400 mb-4 text-center tracking-tight">{(user && user.balance != null ? Number(user.balance).toLocaleString() : '0')} ETB</h1>
                             
                             {/* Top Tabs */}
                             <div className="flex bg-black/40 rounded-xl p-1 mb-4 border border-white/5">
@@ -3445,7 +3378,7 @@ export default function App() {
                                         <span>{t('mainBalance')}</span>
                                     </div>
                                     <div className="text-xl sm:text-2xl font-black text-white tracking-tight">
-                                        {user ? user.balance.toLocaleString() : '0'}{' '}
+                                        {(user && user.balance != null ? Number(user.balance).toLocaleString() : '0')}{' '}
                                         <span className="text-gold-400 text-xs sm:text-sm font-extrabold">{t('birLabel')}</span>
                                     </div>
                                 </div>
@@ -4534,6 +4467,19 @@ export default function App() {
                     </div>
                 </div>
             )}
+
+            {/* ── Password Reset Modal ────────────────────────────────────────── */}
+            <PasswordResetModal
+                isOpen={isForgotPassword}
+                onClose={() => setIsForgotPassword(false)}
+                onResetSuccess={() => {
+                    setIsForgotPassword(false);
+                    setIsLogin(true);
+                    showAlert(language === 'am' ? 'የይለፍ ቃል በተሳካ ሁኔታ ተቀይሯል! አሁን መግባት ይችላሉ።' : 'Password reset successfully! You can now log in.', 'success');
+                }}
+                language={language}
+                apiUrl={API_URL}
+            />
 
             {/* ── Modern Toast Notification ───────────────────────────────────────── */}
             {toastState.open && (

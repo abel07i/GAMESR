@@ -2,6 +2,7 @@ const express = require('express');
 const http    = require('http');
 const { Server } = require('socket.io');
 const path   = require('path');
+const fs     = require('fs');
 const cors   = require('cors');
 
 const db           = require('./src/db');
@@ -21,7 +22,14 @@ app.use(express.json());
 app.use('/api/v1/admin', adminRoutes);
 
 // Serve built frontend (production)
-app.use(express.static(path.join(__dirname, '../frontend')));
+const distPath = path.join(__dirname, '../frontend/dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 // Give roomManager access to the socket server
 roomManager.setIo(io);
@@ -196,8 +204,10 @@ app.post('/api/v1/auth/forgot-password', async (req, res) => {
     // Check if user has Telegram ID linked
     if (!user.telegram_id) {
       return res.status(400).json({ 
-        error: 'No Telegram account linked. Please register again with your Telegram ID or contact support.',
-        needsSetup: true
+        error: 'No Telegram account linked. Please open @fasterekub_bot to link your account or register with your Telegram ID.',
+        needsSetup: true,
+        needsTelegramLink: true,
+        botLink: 'https://t.me/fasterekub_bot'
       });
     }
     
@@ -288,7 +298,9 @@ app.post('/api/v1/auth/forgot-password', async (req, res) => {
     
     res.json({ 
       success: true, 
-      message: 'Verification code sent to your Telegram account'
+      message: 'Verification code sent to your Telegram account',
+      cooldownSeconds: 60,
+      expiresIn: 600
     });
   } catch (err) {
     console.error('Forgot password error:', err);
