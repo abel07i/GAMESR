@@ -10,9 +10,7 @@ import {
   Check, 
   RefreshCw, 
   AlertTriangle,
-  Trash2,
-  CheckSquare,
-  Square
+  Trash2
 } from "lucide-react";
 
 export default function Withdrawals() {

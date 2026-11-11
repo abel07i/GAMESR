@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
-import { getSocket, onSocketEvent, offSocketEvent, cleanupSocket } from './socketManager';
-import { fetchWithTimeout, API_URL } from './config';
+import { getSocket } from './socketManager';
+import { API_URL } from './config';
 import PasswordResetModal from './components/PasswordResetModal';
 
 let audioCtx = null;
@@ -383,10 +383,6 @@ export default function App() {
     const [walletModal, setWalletModal] = useState({ open: false, action: null, amount: '', transactionId: '', loading: false });
     const [walletTabState, setWalletTabState] = useState({ active: 'deposit', amount: '', transactionId: '', phone: '', loading: false });
     const [myWithdrawals, setMyWithdrawals] = useState([]);
-    const [orderAmount, setOrderAmount] = useState(100);
-    const [orderExpanded, setOrderExpanded] = useState(true);
-    const [createdOrder, setCreatedOrder] = useState(null);
-    const [orderLoading, setOrderLoading] = useState(false);
     const [inviteCodeInput, setInviteCodeInput] = useState('');
     const [appliedInvite, setAppliedInvite] = useState(false);
     const [inviteLoading, setInviteLoading] = useState(false);
@@ -733,7 +729,7 @@ export default function App() {
         ticketBuying: "⏱️ ትኬት መግዣ",
         perSeat: "መቀመጫ",
         accountRules: "ህግ እና ደንብ",
-        pickNumbers: "ቁጥር ይምረጡ",
+        pickNumbersAndBet: "ቁጥር ይምረጡ",
         rulesTips: "ደንብ እና መረጃዎች",
         // Room Interface
         gameLabel: "ጨዋታ #",
@@ -1072,7 +1068,7 @@ export default function App() {
         ticketBuying: "⏱️ Ticket Buying",
         perSeat: "Seat",
         accountRules: "Terms & Conditions",
-        pickNumbers: "Pick numbers & BET",
+        pickNumbersAndBet: "Pick numbers & BET",
         rulesTips: "Rules & Tips",
         // Room Interface
         gameLabel: "Game #",
@@ -1497,10 +1493,8 @@ export default function App() {
     }, []);
 
     const [isLogin, setIsLogin] = useState(true);
-    const [formData, setFormData] = useState({ phoneNumber: '', password: '', displayName: '', confirmPassword: '', telegramId: '' });
+    const [formData, setFormData] = useState({ phoneNumber: '', password: '', displayName: '', confirmPassword: '' });
     const [isForgotPassword, setIsForgotPassword] = useState(false);
-    const [resetStep, setResetStep] = useState(1); // 1: enter phone, 2: enter code & new password
-    const [resetCode, setResetCode] = useState('');
 
     const handleAuth = async (e) => {
         e?.preventDefault();
@@ -1533,79 +1527,6 @@ export default function App() {
             showAlert("Authentication failed", 'error');
         }
     };
-
-    const handleForgotPasswordRequest = async (e) => {
-        e?.preventDefault();
-        if (!formData.phoneNumber) {
-            showAlert(language === 'am' ? 'እባክዎ ስልክ ቁጥር ያስገቡ' : 'Please enter phone number', 'error');
-            return;
-        }
-        try {
-            const res = await fetch(`${API_URL}/api/v1/auth/forgot-password`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ phoneNumber: formData.phoneNumber })
-            });
-            const data = await res.json();
-            if (data.error) {
-                if (data.needsStart && data.botLink) {
-                    showAlert(
-                        language === 'am'
-                            ? 'እባክዎ @fasterekub_bot ን ቴሌግራም ላይ ክፈቱ፣ /start ይጫኑ፣ ከዚያ እንደገና ይሞክሩ'
-                            : 'Please open @fasterekub_bot on Telegram, tap Start, then try again',
-                        'error'
-                    );
-                    setTimeout(() => window.open('https://t.me/fasterekub_bot', '_blank'), 1500);
-                } else {
-                    showAlert(data.error, 'error');
-                }
-                return;
-            }
-            showAlert(language === 'am' ? 'የማረጋገጫ ኮድ ወደ ቴሌግራም ተልኳል' : 'Verification code sent to your Telegram', 'success');
-            setResetStep(2);
-        } catch(e) {
-            console.error("Forgot password failed", e);
-            showAlert("Failed to send verification code", 'error');
-        }
-    };
-
-    const handlePasswordReset = async (e) => {
-        e?.preventDefault();
-        if (!resetCode || !formData.password || !formData.confirmPassword) {
-            showAlert(language === 'am' ? 'እባክዎ ሁሉንም መስኮች ይሙሉ' : 'Please fill all fields', 'error');
-            return;
-        }
-        if (formData.password !== formData.confirmPassword) {
-            showAlert(language === 'am' ? 'የይለፍ ቃሎች አይዛመዱም' : 'Passwords do not match', 'error');
-            return;
-        }
-        try {
-            const res = await fetch(`${API_URL}/api/v1/auth/reset-password`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    phoneNumber: formData.phoneNumber,
-                    code: resetCode,
-                    newPassword: formData.password
-                })
-            });
-            const data = await res.json();
-            if (data.error) {
-                showAlert(data.error, 'error');
-                return;
-            }
-            showAlert(language === 'am' ? 'የይለፍ ቃል በተሳካ ሁኔታ ተቀይሯል' : 'Password reset successfully', 'success');
-            setIsForgotPassword(false);
-            setResetStep(1);
-            setResetCode('');
-            setFormData({ phoneNumber: '', password: '', displayName: '', confirmPassword: '', telegramId: '' });
-            setIsLogin(true);
-        } catch(e) {
-            console.error("Password reset failed", e);
-            showAlert("Failed to reset password", 'error');
-        }
-    };
-
 
     // Redirect unauthenticated users to login/register form
     const requireLogin = () => {
@@ -1759,7 +1680,7 @@ export default function App() {
         }
     };
 
-    const fetchMyWithdrawals = () => {
+    function fetchMyWithdrawals() {
         if (!user) return;
         authFetch(`${API_URL}/api/v1/wallet/withdrawals`)
             .then(res => res.json())
@@ -1792,49 +1713,6 @@ export default function App() {
             }
         } catch {
             showAlert('Failed to cancel withdrawal request', 'error');
-        }
-    };
-
-
-    const handleCreateOrder = async () => {
-        if (!user) {
-            requireLogin();
-            return;
-        }
-        const amountNum = parseFloat(orderAmount);
-        if (isNaN(amountNum) || amountNum <= 0) {
-            showAlert('Please enter a valid amount', 'warning');
-            return;
-        }
-        setOrderLoading(true);
-        try {
-            const res = await authFetch(`${API_URL}/api/v1/wallet/order`, {
-                method: 'POST',
-                body: JSON.stringify({ amount: amountNum, mode })
-            });
-            const data = await res.json();
-            const orderRef = data.orderRef || ('ORD-' + Date.now().toString(36).toUpperCase());
-            setCreatedOrder({
-                orderRef,
-                amount: amountNum,
-                phone: data.telebirrPhone || systemConfig.telebirrPhone,
-                name: data.telebirrName || systemConfig.telebirrName,
-                time: new Date().toLocaleTimeString()
-            });
-            try {
-                await navigator.clipboard.writeText(data.telebirrPhone || systemConfig.telebirrPhone);
-            } catch {}
-        } catch {
-            const orderRef = 'ORD-' + Date.now().toString(36).toUpperCase();
-            setCreatedOrder({
-                orderRef,
-                amount: amountNum,
-                phone: systemConfig.telebirrPhone,
-                name: systemConfig.telebirrName,
-                time: new Date().toLocaleTimeString()
-            });
-        } finally {
-            setOrderLoading(false);
         }
     };
 
