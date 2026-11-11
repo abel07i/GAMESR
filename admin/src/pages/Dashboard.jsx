@@ -7,6 +7,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [chartData, setChartData] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     Promise.all([
@@ -14,11 +15,14 @@ export default function Dashboard() {
       api.getRevenueChart()
     ]).then(([statsData, chartRes]) => {
       setStats(statsData);
-      setChartData(chartRes);
+      setChartData(Array.isArray(chartRes) ? chartRes : []);
+    }).catch(err => {
+      setError(err.message || "Failed to load dashboard");
     }).finally(() => setLoading(false));
   }, []);
 
   if (loading) return <div className="loading-overlay"><div className="spinner"></div> Loading dashboard...</div>;
+  if (!stats) return <div className="empty-state">{error || "Failed to load dashboard stats."}</div>;
 
   return (
     <div>

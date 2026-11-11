@@ -14,7 +14,13 @@ async function request(method, path, body = null) {
   if (body) opts.body = JSON.stringify(body);
 
   const res = await fetch(`${BASE_URL}${path}`, opts);
-  const data = await res.json();
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Invalid server response (${res.status})`);
+  }
   if (!res.ok) throw new Error(data.error || `Request failed: ${res.status}`);
   return data;
 }

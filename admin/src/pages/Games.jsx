@@ -238,7 +238,7 @@ export default function Games() {
               className="form-select"
               style={{ width: "auto" }}
               value={filters.status}
-              onChange={e => setFilters({ ...filters, status: e.target.value })}
+              onChange={e => setFilters({ ...filters, status: e.target.value, page: 1 })}
             >
               <option value="">All Statuses</option>
               <option value="open">Open (Accepting Players)</option>
@@ -250,7 +250,7 @@ export default function Games() {
               className="form-select"
               style={{ width: "auto" }}
               value={filters.tier}
-              onChange={e => setFilters({ ...filters, tier: e.target.value })}
+              onChange={e => setFilters({ ...filters, tier: e.target.value, page: 1 })}
             >
               <option value="">All Tiers</option>
               <option value="starter">Starter</option>
@@ -498,9 +498,11 @@ export default function Games() {
                       <option value="10">10 Players</option>
                       <option value="15">15 Players</option>
                       <option value="20">20 Players</option>
+                      <option value="30">30 Players</option>
                       <option value="40">40 Players</option>
                       <option value="50">50 Players</option>
                       <option value="60">60 Players</option>
+                      <option value="70">70 Players</option>
                       <option value="80">80 Players</option>
                     </select>
                   </div>
@@ -653,7 +655,12 @@ export default function Games() {
                         type="number"
                         className="form-input"
                         value={editModal.targetJackpot}
-                        onChange={e => setEditModal({ ...editModal, targetJackpot: e.target.value })}
+                        onChange={e => {
+                          const val = e.target.value;
+                          const size = editModal.room?.group_size || 10;
+                          const calcPrice = val !== '' && !isNaN(parseFloat(val)) ? (parseFloat(val) / size).toFixed(2) : '';
+                          setEditModal({ ...editModal, targetJackpot: val, ticketPrice: calcPrice });
+                        }}
                       />
                     </div>
                     <div className="form-group">
@@ -663,7 +670,12 @@ export default function Games() {
                         className="form-input"
                         step="0.01"
                         value={editModal.ticketPrice}
-                        onChange={e => setEditModal({ ...editModal, ticketPrice: e.target.value })}
+                        onChange={e => {
+                          const val = e.target.value;
+                          const size = editModal.room?.group_size || 10;
+                          const calcJackpot = val !== '' && !isNaN(parseFloat(val)) ? (parseFloat(val) * size).toFixed(2) : '';
+                          setEditModal({ ...editModal, ticketPrice: val, targetJackpot: calcJackpot });
+                        }}
                       />
                     </div>
                   </div>

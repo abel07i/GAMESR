@@ -11,7 +11,7 @@ export default function Players() {
   // Modal State
   const [modalOpen, setModalOpen] = useState(false);
   const [editPlayerId, setEditPlayerId] = useState(null);
-  const [formData, setFormData] = useState({ phoneNumber: "", displayName: "", password: "" });
+  const [formData, setFormData] = useState({ phoneNumber: "", displayName: "", password: "", telegramId: "" });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   
@@ -21,7 +21,8 @@ export default function Players() {
   const fetchPlayers = () => {
     setLoading(true);
     api.getPlayers(filters)
-      .then(res => setData(res))
+      .then(res => setData(res || { players: [], total: 0 }))
+      .catch(err => console.error("Failed to load players:", err))
       .finally(() => setLoading(false));
   };
 
@@ -143,7 +144,7 @@ export default function Players() {
               className="form-select"
               style={{ width: "auto" }}
               value={filters.status}
-              onChange={e => setFilters({ ...filters, status: e.target.value })}
+              onChange={e => setFilters({ ...filters, status: e.target.value, page: 1 })}
             >
               <option value="">All Statuses</option>
               <option value="active">Active</option>
@@ -178,7 +179,7 @@ export default function Players() {
                 </thead>
                 <tbody>
                   {data.players.length === 0 ? (
-                    <tr><td colSpan="7" className="text-center" style={{ padding: "32px 0", color: "var(--text-muted)" }}>No players found.</td></tr>
+                    <tr><td colSpan="8" className="text-center" style={{ padding: "32px 0", color: "var(--text-muted)" }}>No players found.</td></tr>
                   ) : data.players.map(p => (
                     <tr key={p.id} className={selectedPlayers.includes(p.id) ? "selected-row" : ""}>
                       <td style={{ textAlign: 'center' }}>

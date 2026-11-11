@@ -228,7 +228,7 @@ router.get('/players', adminMiddleware, async (req, res) => {
     const dataParams = [...params, parseInt(limit), offset];
     const result = await db.query(`
       SELECT
-        u.id, u.display_name, u.phone_number, u.is_active, u.role,
+        u.id, u.display_name, u.phone_number, u.telegram_id, u.is_active, u.role,
         u.created_at, u.last_login_at,
         COALESCE(w.balance, 0) AS real_balance,
         COALESCE(w.total_deposited, 0) AS total_deposited,
@@ -241,7 +241,7 @@ router.get('/players', adminMiddleware, async (req, res) => {
       LEFT JOIN wallets w ON w.user_id = u.id AND w.mode = 'real'
       LEFT JOIN tickets t ON t.user_id = u.id
       ${whereClause}
-      GROUP BY u.id, w.balance, w.total_deposited, w.total_withdrawn, w.total_wagered, w.total_won
+      GROUP BY u.id, u.telegram_id, w.balance, w.total_deposited, w.total_withdrawn, w.total_wagered, w.total_won
       ORDER BY u.created_at DESC
       LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}
     `, dataParams);
@@ -353,7 +353,7 @@ router.get('/players/:id', adminMiddleware, async (req, res) => {
       `, [id]),
       db.query(`
         SELECT
-          t.id, r.room_number, r.tier, r.target_jackpot, t.seat_number,
+          t.id, t.room_id, r.room_number, r.tier, r.target_jackpot, r.status AS room_status, t.seat_number,
           t.purchase_price, t.is_winner, t.is_refunded, t.purchased_at,
           CASE WHEN t.is_winner THEN r.net_winner_payout WHEN t.is_refunded THEN t.purchase_price ELSE 0 END AS amount_received
         FROM tickets t
@@ -405,9 +405,15 @@ router.post('/players/:id/adjust-balance', adminMiddleware, async (req, res) => 
     if (isNaN(parsedAmount) || parsedAmount === 0) return res.status(400).json({ error: 'Invalid amount' });
 
     if (parsedAmount > 0) {
-      await db.query('SELECT * FROM fn_wallet_deposit($1, $2, $3, $4)', [id, parsedAmount, mode, null]);
+      const dRes = await db.query('SELECT * FROM fn_wallet_deposit($1, $2, $3, $4)', [id, parsedAmount, mode, null]);
+      if (!dRes.rows[0]?.success) {
+        return res.status(400).json({ error: 'Deposit failed' });
+      }
     } else {
-      await db.query('SELECT * FROM fn_wallet_withdraw($1, $2, $3, $4)', [id, Math.abs(parsedAmount), mode, null]);
+      const wRes = await db.query('SELECT * FROM fn_wallet_withdraw($1, $2, $3, $4)', [id, Math.abs(parsedAmount), mode, null]);
+      if (!wRes.rows[0]?.success) {
+        return res.status(400).json({ error: wRes.rows[0]?.error_message || 'Deduction failed' });
+      }
     }
 
     const newBal = await db.query(`SELECT balance FROM wallets WHERE user_id=$1 AND mode=$2`, [id, mode]);
@@ -521,7 +527,7 @@ router.post('/games/:id/force-start', adminMiddleware, async (req, res) => {
        return res.status(400).json({ error: 'Need at least 2 unique players to force start' });
     }
     
-    roomManager.startRoomGame(roomId);
+    roomManager.startRoomGame(roomId, true);
     
     res.json({ success: true, message: 'Game forced to start successfully' });
   } catch (err) {
@@ -932,13 +938,13 @@ router.put('/settings', adminMiddleware, async (req, res) => {
       await db.query('INSERT INTO system_config (config_key, config_value) VALUES ($1, $2) ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value', ['PLATFORM_FEE_RATE', platformFee.toString()]);
     }
     if (telebirrPhone !== undefined) {
-      await db.query('UPDATE system_config SET config_value = $1 WHERE config_key = $2', [telebirrPhone, 'TELEBIRR_PHONE']);
+      await db.query('INSERT INTO system_config (config_key, config_value) VALUES ($1, $2) ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value', ['TELEBIRR_PHONE', telebirrPhone]);
     }
     if (telebirrName !== undefined) {
-      await db.query('UPDATE system_config SET config_value = $1 WHERE config_key = $2', [telebirrName, 'TELEBIRR_NAME']);
+      await db.query('INSERT INTO system_config (config_key, config_value) VALUES ($1, $2) ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value', ['TELEBIRR_NAME', telebirrName]);
     }
     if (verifyEtApiKey !== undefined) {
-      await db.query('UPDATE system_config SET config_value = $1 WHERE config_key = $2', [verifyEtApiKey, 'VERIFY_ET_API_KEY']);
+      await db.query('INSERT INTO system_config (config_key, config_value) VALUES ($1, $2) ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value', ['VERIFY_ET_API_KEY', verifyEtApiKey]);
     }
 
     res.json({ success: true });

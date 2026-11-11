@@ -41,18 +41,30 @@ function generatePlayerToken(userId) {
 }
 
 // Middleware: verifies player Bearer token and sets req.playerId
-function playerMiddleware(req, res, next) {
+async function playerMiddleware(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Authentication required. Please login.' });
   }
+  let decoded;
   try {
-    const decoded = verifyToken(auth.split(' ')[1]);
+    decoded = verifyToken(auth.split(' ')[1]);
     if (!decoded.id) return res.status(401).json({ error: 'Invalid token' });
+  } catch (err) {
+    return res.status(401).json({ error: 'Session expired. Please login again.' });
+  }
+  try {
+    const userRes = await db.query('SELECT is_active FROM users WHERE id = $1', [decoded.id]);
+    if (userRes.rows.length === 0) {
+      return res.status(401).json({ error: 'Account not found. Please login again.' });
+    }
+    if (userRes.rows[0].is_active === false) {
+      return res.status(403).json({ error: 'Your account has been suspended. Please contact support.' });
+    }
     req.playerId = decoded.id; // safe, verified userId
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'Session expired. Please login again.' });
+    return res.status(500).json({ error: 'Authentication check failed' });
   }
 }
 
@@ -125,7 +137,7 @@ app.post('/api/v1/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'All fields are required' });
 
     const userRes = await db.query(
-      `SELECT id, display_name, password_hash FROM users WHERE phone_number = $1`,
+      `SELECT id, display_name, password_hash, is_active FROM users WHERE phone_number = $1`,
       [phoneNumber]
     );
 
@@ -133,6 +145,9 @@ app.post('/api/v1/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid phone number or password' });
 
     const user = userRes.rows[0];
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Your account has been suspended. Please contact support.' });
+    }
     const isMatch = await verifyPassword(password, user.password_hash);
     if (!isMatch)
       return res.status(401).json({ error: 'Invalid phone number or password' });
@@ -159,15 +174,24 @@ app.put('/api/v1/auth/profile', playerMiddleware, async (req, res) => {
   try {
     const userId = req.playerId; // from verified token
     const { displayName, password } = req.body;
-    let query, values;
+    const cleanName = typeof displayName === 'string' ? displayName.trim() : '';
+    if (!cleanName && !password) {
+      return res.status(400).json({ error: 'Display name or password is required' });
+    }
+
+    const fields = [];
+    const values = [];
+    if (cleanName) {
+      fields.push(`display_name=$${fields.length + 1}`);
+      values.push(cleanName);
+    }
     if (password) {
       const hash = await hashPassword(password);
-      query  = 'UPDATE users SET display_name=$1, password_hash=$2, updated_at=NOW() WHERE id=$3 RETURNING display_name';
-      values = [displayName, hash, userId];
-    } else {
-      query  = 'UPDATE users SET display_name=$1, updated_at=NOW() WHERE id=$2 RETURNING display_name';
-      values = [displayName, userId];
+      fields.push(`password_hash=$${fields.length + 1}`);
+      values.push(hash);
     }
+    values.push(userId);
+    const query = `UPDATE users SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${values.length} RETURNING display_name`;
     const result = await db.query(query, values);
     if (result.rowCount === 0) throw new Error('User not found');
     res.json({ success: true, username: result.rows[0].display_name });
@@ -883,13 +907,18 @@ app.post('/api/v1/rooms/ensure', async (req, res) => {
 
 // Create a brand-new room (or reuse an existing open one) and immediately join it
 app.post('/api/v1/rooms/create_and_join', playerMiddleware, async (req, res) => {
+  let createdNow = false;
+  let room = null;
   try {
     const userId = req.playerId;
     const { mode = 'real', username, groupSize, seatNumbers, targetJackpot } = req.body;
 
-    const sizeNum = parseInt(groupSize);
+    const sizeNum = parseInt(groupSize, 10);
     const jackpotNum = parseFloat(targetJackpot);
-    const seatCount = seatNumbers && seatNumbers.length > 0 ? seatNumbers.length : 1;
+    if (isNaN(sizeNum) || sizeNum < 2 || isNaN(jackpotNum) || jackpotNum <= 0) {
+      return res.status(400).json({ error: 'Valid group size and target jackpot are required' });
+    }
+    const seatCount = Array.isArray(seatNumbers) && seatNumbers.length > 0 ? seatNumbers.length : 1;
 
     let tierCategory = 'starter';
     if (jackpotNum >= 100000) tierCategory = 'gold';
@@ -897,7 +926,7 @@ app.post('/api/v1/rooms/create_and_join', playerMiddleware, async (req, res) => 
     else if (jackpotNum >= 1000)  tierCategory = 'bronze';
 
     // Check if an open room matching this prize and player count already exists
-    let room = Array.from(roomManager.rooms.values()).find(
+    room = Array.from(roomManager.rooms.values()).find(
       r => r.status === 'open' &&
            r.groupSize === sizeNum &&
            Math.round(r.targetJackpot) === Math.round(jackpotNum) &&
@@ -906,12 +935,17 @@ app.post('/api/v1/rooms/create_and_join', playerMiddleware, async (req, res) => 
 
     if (!room) {
       room = await roomManager.createRoom(tierCategory, jackpotNum, sizeNum);
+      createdNow = true;
     }
 
     const { newBalance, assignedSeats } = await roomManager.joinRoom(room.id, userId, seatCount, mode, username, seatNumbers);
 
     res.json({ success: true, balance: newBalance, assignedSeats, room: roomManager.rooms.get(room.id) || room });
   } catch (err) {
+    // Roll back orphan empty room if creation succeeded but joining failed (e.g. insufficient balance)
+    if (createdNow && room && room.filledSeats === 0) {
+      await roomManager.deleteRoom(room.id).catch(() => {});
+    }
     console.error('create_and_join error:', err);
     res.status(400).json({ error: err.message });
   }

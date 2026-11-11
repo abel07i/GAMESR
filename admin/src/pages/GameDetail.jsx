@@ -114,6 +114,7 @@ export default function GameDetail() {
   const isSettled = game.status === "settled";
   const isOpen = game.status === "open";
   const isCancelled = ["cancelled", "refunded"].includes(game.status);
+  const winningSeat = (tickets || []).find(t => t.is_winner || t.id === game.winner_ticket_id)?.seat_number || game.winning_number;
 
   return (
     <div>
@@ -144,7 +145,7 @@ export default function GameDetail() {
                 </span>
               </div>
               <div className="text-muted text-sm mt-1">
-                Created on {new Date(game.created_at).toLocaleString()}
+                Created on {new Date(game.started_at || game.created_at).toLocaleString()}
                 {game.settled_at && ` • Settled on ${new Date(game.settled_at).toLocaleString()}`}
               </div>
             </div>
@@ -215,7 +216,7 @@ export default function GameDetail() {
                   <CheckCircle size={28} className="text-success" />
                   <div>
                     <div className="font-bold text-success" style={{ fontSize: 16 }}>
-                      Winning Seat Number: #{game.winning_number}
+                      Winning Seat Number: #{winningSeat || "—"}
                     </div>
                     <div className="text-sm">
                       Winner:{" "}
@@ -302,7 +303,7 @@ export default function GameDetail() {
               <div style={{ background: "var(--bg-glass)", padding: 14, borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
                 <div className="text-xs text-muted mb-1">Nonce & Winning Seat</div>
                 <div className="font-mono text-xs">
-                  Nonce: <span className="font-bold">{game.nonce || 1}</span> &nbsp;|&nbsp; Seat: <span className="text-success font-bold">#{game.winning_number || "—"}</span>
+                  Nonce: <span className="font-bold">{game.nonce || 1}</span> &nbsp;|&nbsp; Seat: <span className="text-success font-bold">#{winningSeat || "—"}</span>
                 </div>
               </div>
             </div>
@@ -430,7 +431,12 @@ export default function GameDetail() {
                         min="1"
                         className="form-input"
                         value={editModal.targetJackpot}
-                        onChange={e => setEditModal({ ...editModal, targetJackpot: e.target.value })}
+                        onChange={e => {
+                          const val = e.target.value;
+                          const size = game.group_size || 10;
+                          const calcPrice = val !== '' && !isNaN(parseFloat(val)) ? (parseFloat(val) / size).toFixed(2) : '';
+                          setEditModal({ ...editModal, targetJackpot: val, ticketPrice: calcPrice });
+                        }}
                       />
                     </div>
                     <div style={{ marginBottom: 16 }}>
@@ -440,10 +446,15 @@ export default function GameDetail() {
                       <input
                         type="number"
                         min="0.1"
-                        step="0.1"
+                        step="0.01"
                         className="form-input"
                         value={editModal.ticketPrice}
-                        onChange={e => setEditModal({ ...editModal, ticketPrice: e.target.value })}
+                        onChange={e => {
+                          const val = e.target.value;
+                          const size = game.group_size || 10;
+                          const calcJackpot = val !== '' && !isNaN(parseFloat(val)) ? (parseFloat(val) * size).toFixed(2) : '';
+                          setEditModal({ ...editModal, ticketPrice: val, targetJackpot: calcJackpot });
+                        }}
                       />
                     </div>
                   </>

@@ -304,6 +304,8 @@ export default function App() {
     };
 
     const [mode, setMode] = useState('real');
+    const modeRef = useRef(mode);
+    useEffect(() => { modeRef.current = mode; }, [mode]);
     const [rooms, setRooms] = useState([]);
 
     // Live open games, always keeping 5, 10, 20, 40, 60, 80 accessible
@@ -551,33 +553,17 @@ export default function App() {
         return roomsWithJoinedUsers;
     }, [liveRealRooms, wizardStep, wizard.groupSize, wizard.jackpot]);
 
-    // Auto-ensure open room exists for selected prize and player count
+    // Sync live rooms when entering rooms tab
     useEffect(() => {
-        if (activeTab === 'rooms' && wizard.jackpot) {
-            const targetJackpot = wizard.jackpot;
-            const targetSize = wizardStep === 2 ? wizard.groupSize : null;
-
-            const hasExactMatch = targetSize 
-                ? liveRealRooms.some(r => r.groupSize === targetSize && Math.round(r.targetJackpot) === Math.round(targetJackpot) && (r.status === 'open' || r.status === 'drawing'))
-                : liveRealRooms.some(r => Math.round(r.targetJackpot) === Math.round(targetJackpot) && (r.status === 'open' || r.status === 'drawing'));
-
-            if (!hasExactMatch) {
-                fetch(`${API_URL}/api/v1/rooms/ensure`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        targetJackpot, 
-                        groupSize: targetSize || 'all' 
-                    })
-                })
+        if (activeTab === 'rooms') {
+            fetch(`${API_URL}/api/v1/rooms`)
                 .then(res => res.json())
                 .then(data => {
-                    if (data.rooms) setRooms(data.rooms);
+                    if (Array.isArray(data)) setRooms(data);
                 })
-                .catch(err => console.error('Failed to auto-ensure room:', err));
-            }
+                .catch(err => console.error('Failed to sync rooms:', err));
         }
-    }, [activeTab, wizardStep, wizard.jackpot, wizard.groupSize, liveRealRooms]);
+    }, [activeTab]);
     const [isEditingProfile, setIsEditingProfile] = useState(false);
     const [profileForm, setProfileForm] = useState({ displayName: '', password: '' });
     const [results, setResults] = useState([]);
@@ -1332,14 +1318,15 @@ export default function App() {
 
         fetch(`${API_URL}/api/v1/rooms`)
             .then(res => res.json())
-            .then(data => setRooms(data));
+            .then(data => setRooms(Array.isArray(data) ? data : []))
+            .catch(err => console.error(err));
             
         fetch(`${API_URL}/api/v1/results`)
             .then(res => res.json())
-            .then(data => setResults(data || []))
+            .then(data => setResults(Array.isArray(data) ? data : []))
             .catch(err => console.error(err));
 
-        socket.on('room:state_update', (roomsData) => setRooms(roomsData));
+        socket.on('room:state_update', (roomsData) => setRooms(Array.isArray(roomsData) ? roomsData : []));
         
         socket.on('room:time_tick', ({ roomId, roomNumber, timeRemaining, filledSeats, groupSize, playerCount }) => {
             setRooms(prev => prev.map(r => r.id === roomId ? { 
@@ -1489,7 +1476,41 @@ export default function App() {
             }, 800);
         });
 
-        return () => socket.off();
+        socket.on('room:refunded', ({ roomId, reason }) => {
+            if (drawIntervalRef.current) clearInterval(drawIntervalRef.current);
+            setRooms(prev => prev.filter(r => r.id !== roomId));
+            if (seatModalRef.current.open && seatModalRef.current.room?.id === roomId) {
+                setSeatModal({ open: false, room: null, selectedSeats: [] });
+                showAlert(reason || 'Game room was cancelled and all tickets were refunded.', 'info');
+            }
+            if (drawModalRef.current.open && drawModalRef.current.room === roomId) {
+                setDrawModal({ open: false, room: null, result: null });
+            }
+            const token = localStorage.getItem('fastderash_token');
+            if (token && userRef.current?.id) {
+                fetch(`${API_URL}/api/v1/wallet/balance?mode=${modeRef.current || 'real'}`, {
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+                })
+                    .then(r => r.ok ? r.json() : null)
+                    .then(d => {
+                        if (d && typeof d.balance === 'number') {
+                            setUser(u => u ? { ...u, balance: d.balance } : u);
+                        }
+                    })
+                    .catch(() => {});
+            }
+        });
+
+        return () => {
+            if (drawIntervalRef.current) clearInterval(drawIntervalRef.current);
+            socket.off('room:state_update');
+            socket.off('room:time_tick');
+            socket.off('room:waiting_for_players');
+            socket.off('room:seat_claimed');
+            socket.off('draw:started');
+            socket.off('draw:winner_revealed');
+            socket.off('room:refunded');
+        };
     }, []);
 
     const [isLogin, setIsLogin] = useState(true);
@@ -1844,7 +1865,7 @@ export default function App() {
         setActiveTab('rooms');
     };
 
-    const userInviteCode = user ? `EQUB-${user.id.slice(0, 4).toUpperCase()}${user.phone ? user.phone.slice(-3) : '77'}` : 'EQUB-7721';
+    const userInviteCode = user ? `EQUB-${user.id.slice(0, 4).toUpperCase()}` : 'EQUB-7721';
 
     const activeRoom = seatModal.open && seatModal.room ? (rooms.find(r => r.id === seatModal.room.id) || seatModal.room) : null;
 
@@ -1911,13 +1932,13 @@ export default function App() {
                                 </span>
                                 <span className="text-[9px] sm:text-[10px] font-bold text-white/50 uppercase tracking-wider bg-white/5 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-lg border border-white/5">
                                     {({
-                                        Starter: t('tierStarter'),
-                                        Bronze: t('tierBronze'),
-                                        Silver: t('tierSilver'),
-                                        Gold: t('tierGold'),
-                                        VIP: t('tierVIP'),
-                                        Standard: t('tierStandard')
-                                    })[activeRoom.tierCategory] || activeRoom.tierCategory || t('tierStandard')}
+                                        starter: t('tierStarter'),
+                                        bronze: t('tierBronze'),
+                                        silver: t('tierSilver'),
+                                        gold: t('tierGold'),
+                                        vip: t('tierVIP'),
+                                        standard: t('tierStandard')
+                                    })[(activeRoom.tierCategory || '').toLowerCase()] || activeRoom.tierCategory || t('tierStandard')}
                                 </span>
                             </div>
                         </div>
@@ -4084,16 +4105,16 @@ export default function App() {
                                 <div className="w-full bg-black/40 rounded-2xl p-4 text-xs sm:text-sm text-white/70 space-y-2 border border-white/5">
                                     <div className="flex justify-between">
                                         <span>Gross Jackpot</span>
-                                        <span className="font-mono text-white">{drawModal.result.grossPool.toLocaleString()} ETB</span>
+                                        <span className="font-mono text-white">{(drawModal.result.grossPool ?? 0).toLocaleString()} ETB</span>
                                     </div>
                                     <div className="flex justify-between text-red-400/80">
                                         <span>Platform Fee</span>
-                                        <span className="font-mono">-{drawModal.result.platformFee.toLocaleString()} ETB</span>
+                                        <span className="font-mono">-{(drawModal.result.platformFee ?? 0).toLocaleString()} ETB</span>
                                     </div>
                                     <div className="h-px bg-white/10 my-2"></div>
                                     <div className="flex justify-between font-bold text-equb-400 text-base sm:text-lg">
                                         <span>Net Payout</span>
-                                        <span className="font-mono">{drawModal.result.netPayout.toLocaleString()} ETB</span>
+                                        <span className="font-mono">{(drawModal.result.netPayout ?? 0).toLocaleString()} ETB</span>
                                     </div>
                                 </div>
                                 
@@ -4143,7 +4164,7 @@ export default function App() {
             {walletModal.open && (
                 <div className="fixed inset-0 bg-black/85 z-[60] flex flex-col items-center justify-center p-4 backdrop-blur-md animate-[fadeIn_0.2s_ease-out]">
                     <div className="glass w-full max-w-sm rounded-3xl p-6 relative border border-white/10 shadow-2xl">
-                        <button className="absolute top-4 right-4 text-white/50 hover:text-white transition" onClick={() => setWalletModal({ open: false, action: null, amount: '' })}>✕</button>
+                        <button className="absolute top-4 right-4 text-white/50 hover:text-white transition" onClick={() => setWalletModal({ open: false, action: null, amount: '', transactionId: '', loading: false })}>✕</button>
                         
                         <div className="w-16 h-16 rounded-full bg-gold-500/20 text-gold-400 flex items-center justify-center mx-auto mb-4 border border-gold-500/30">
                             <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg>

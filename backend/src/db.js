@@ -1,5 +1,6 @@
+const path = require('path');
 const { Pool } = require('pg');
-require('dotenv').config(); // Loads variables from .env
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') }); // Loads variables from backend/.env regardless of cwd
 
 // Create a new connection pool using environment variables or DATABASE_URL
 const poolConfig = process.env.DATABASE_URL

@@ -5,12 +5,17 @@ import { TrendingUp, CreditCard, Gamepad2, Award } from "lucide-react";
 export default function Profit() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    api.getProfitSummary().then(res => setData(res)).finally(() => setLoading(false));
+    api.getProfitSummary()
+      .then(res => setData(res))
+      .catch(err => setError(err.message || "Failed to load profit summary"))
+      .finally(() => setLoading(false));
   }, []);
 
   if (loading) return <div className="loading-overlay"><div className="spinner"></div></div>;
+  if (!data) return <div className="empty-state">{error || "Failed to load profit summary."}</div>;
 
   return (
     <div>
@@ -54,7 +59,7 @@ export default function Profit() {
               </div>
               <div className="flex-between p-4 mt-4" style={{ borderTop: "1px solid var(--border)" }}>
                 <div className="font-bold text-muted">Net Cash Flow</div>
-                <div className="font-bold" style={{ fontSize: 20 }}>{data.total_deposits - data.total_withdrawals} ETB</div>
+                <div className="font-bold" style={{ fontSize: 20 }}>{(parseFloat(data.total_deposits || 0) - parseFloat(data.total_withdrawals || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
               </div>
             </div>
           </div>

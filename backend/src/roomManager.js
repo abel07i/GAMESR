@@ -59,7 +59,7 @@ class RoomManager {
         timeRemaining: Math.max(1, parseInt(r.seconds_remaining) || 60),
         maxSeatsPerUser: r.max_seats_per_player,
         status: r.status,
-        createdAt: r.created_at || new Date().toISOString(),
+        createdAt: r.started_at || r.created_at || new Date().toISOString(),
         seats: seats.map(s => ({
           seatNumber: s.seatNumber,
           username: s.username,
@@ -73,6 +73,14 @@ class RoomManager {
 
     console.log(`🗂️  Loaded ${this.rooms.size} active rooms with players into memory cache.`);
     this.startTick();
+
+    // Recover any rooms interrupted mid-draw on server restart
+    for (const [id, r] of this.rooms.entries()) {
+      if (r.status === 'drawing') {
+        console.log(`🔄 Resuming interrupted draw for Game #${r.roomNumber}...`);
+        setImmediate(() => this.resolveRoom(id, true));
+      }
+    }
   }
 
   // ─── 1-Second Timer Tick (60-Second Game Cycle) ───────────────────────────
@@ -330,13 +338,13 @@ class RoomManager {
   }
 
   // ─── Start Game: Close Joining & Immediately Open Next Game Cycle ─────────
-  async startRoomGame(roomId) {
+  async startRoomGame(roomId, force = false) {
     const room = this.rooms.get(roomId);
     if (!room || room.status !== 'open') return;
 
     // 1. Close player joining for this game
     room.status = 'drawing';
-    console.log(`🚀 Game #${room.roomNumber} started drawing!`);
+    console.log(`🚀 Game #${room.roomNumber} started drawing!${force ? ' (forced)' : ''}`);
 
     // 2. Mark room as 'drawing' in PostgreSQL
     await db.query(`UPDATE rooms SET status = 'drawing', draw_started_at = NOW() WHERE id = $1`, [roomId]);
@@ -355,11 +363,11 @@ class RoomManager {
     }
 
     // 5. Run draw & settlement
-    await this.resolveRoom(roomId);
+    await this.resolveRoom(roomId, force);
   }
 
   // ─── Resolve Game: Pick Winner, Settle 15% Platform Fee, Credit Winner ────
-  async resolveRoom(roomId) {
+  async resolveRoom(roomId, force = false) {
     try {
       const room = this.rooms.get(roomId);
       if (!room) return;
@@ -380,10 +388,12 @@ class RoomManager {
         username: t.username
       }));
 
-      // Require all seats to be filled before resolving
-      if (dbTickets.length < room.groupSize) {
-        console.warn(`⚠️ Game #${room.roomNumber} has < all seats filled (${dbTickets.length}/${room.groupSize}). Cannot resolve until full.`);
+      // Require all seats to be filled before resolving unless admin force-started
+      if (!force && dbTickets.length < room.groupSize) {
+        console.warn(`⚠️ Game #${room.roomNumber} has < all seats filled (${dbTickets.length}/${room.groupSize}). Reverting to open.`);
         room.status = 'open';
+        await db.query(`UPDATE rooms SET status = 'open', draw_started_at = NULL WHERE id = $1`, [roomId]).catch(() => {});
+        if (this.io) this.io.emit('room:state_update', this.getRoomSummaries());
         return;
       }
 
@@ -393,8 +403,11 @@ class RoomManager {
         console.warn(`⚠️ Game #${room.roomNumber} has < 2 players at resolution. Refunding.`);
         await db.query('SELECT * FROM fn_refund_room($1)', [roomId]);
         await db.query(`UPDATE rooms SET status = 'refunded' WHERE id = $1`, [roomId]);
-        if (this.io) this.io.emit('room:refunded', { roomId, reason: 'Insufficient players' });
         this.rooms.delete(roomId);
+        if (this.io) {
+          this.io.emit('room:refunded', { roomId, reason: 'Insufficient players' });
+          this.io.emit('room:state_update', this.getRoomSummaries());
+        }
         return;
       }
 
@@ -423,6 +436,8 @@ class RoomManager {
         ).catch(e => console.error('Failed to persist provably fair seeds:', e));
       }
 
+      room.status = 'settled';
+
       // Broadcast winner to all players
       if (this.io) {
         this.io.emit('draw:winner_revealed', {
@@ -450,7 +465,6 @@ class RoomManager {
           tierCategory: room.tierCategory
         });
 
-        room.status = 'settled';
         this.io.emit('room:state_update', this.getRoomSummaries());
       }
 

@@ -10,7 +10,10 @@ export default function PlayerDetail() {
   const [adjustModal, setAdjustModal] = useState({ open: false, amount: "", type: "add" });
 
   const fetchPlayer = () => {
-    api.getPlayer(id).then(res => setData(res)).finally(() => setLoading(false));
+    api.getPlayer(id)
+      .then(res => setData(res))
+      .catch(err => console.error("Failed to fetch player:", err))
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => { fetchPlayer(); }, [id]);
@@ -151,6 +154,7 @@ export default function PlayerDetail() {
                     <td>
                       {t.is_winner ? <span className="badge badge-success"><Award size={12} className="mr-1" /> Won {t.amount_received} ETB</span> :
                        t.is_refunded ? <span className="badge badge-warning">Refunded</span> :
+                       (t.room_status === 'open' || t.room_status === 'drawing') ? <span className="badge badge-accent">Active</span> :
                        <span className="badge badge-muted">Lost</span>}
                     </td>
                   </tr>

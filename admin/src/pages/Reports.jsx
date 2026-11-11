@@ -19,7 +19,7 @@ export default function Reports() {
       const headers = Object.keys(data[0]);
       const csvRows = [
         headers.join(","),
-        ...data.map(row => headers.map(h => `"${(row[h]||'').toString().replace(/"/g, '""')}"`).join(","))
+        ...data.map(row => headers.map(h => `"${(row[h] ?? '').toString().replace(/"/g, '""')}"`).join(","))
       ];
       const csvString = csvRows.join("\n");
       const blob = new Blob([csvString], { type: 'text/csv' });
@@ -31,6 +31,7 @@ export default function Reports() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
     } catch (err) {
       alert("Error generating report: " + err.message);
     } finally {
