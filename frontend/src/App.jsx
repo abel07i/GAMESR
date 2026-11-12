@@ -670,7 +670,8 @@ export default function App() {
             depositTelebirr: "ቴሌብር ያስገቡ",
             balanceUpdates: "ሲረጋገጥ ቀሪ ሂሳብ ይሞላል",
             eng: "EN",
-            roomSubtitle: "ማሸነፍ የሚፈልጉትን የገንዘብ መጠን ይምረጡ. አብረው መጫወት የሚፈልጉትን የሰው ብዛት ይምረጡ. ክፍል ይክፈቱ",
+            roomSubtitlePrize: "ማሸነፍ የሚፈልጉትን የገንዘብ መጠን ይምረጡ",
+            roomSubtitlePlayers: "አብረው መጫወት የሚፈልጉትን የሰው ብዛት ይምረጡ",
             min2Players: "ሁሉም መቀመጫዎች እስኪሞሉ ይጠብቃል",
             buyTicket: "ትኬት መግዣ",
             remaining: "ቀሪ",
@@ -978,7 +979,8 @@ export default function App() {
             selected: "Selected",
             resultsTitle: "Results",
             noResults: "No results",
-            roomSubtitle: "Choose the amount of money you want to win. Choose how many people you want to play with. Open a room",
+            roomSubtitlePrize: "Choose the amount of money you want to win",
+            roomSubtitlePlayers: "Choose how many people you want to play with",
             noOpenGames: "No open games — create a new cycle above",
             loginFirst: "Please login first",
             selectSeats: "Select Seats",
@@ -2582,7 +2584,7 @@ export default function App() {
                                 <div className="flex items-start justify-between gap-3">
                                     <div>
                                         <h1 className="text-xl font-black tracking-tight text-gold-400 drop-shadow-[0_0_8px_rgba(234,161,27,0.4)] sm:text-2xl lg:text-3xl">{t('title')}</h1>
-                                        <p className="mt-1 text-xs text-white/45 sm:text-sm">{t('roomSubtitle')}</p>
+                                        <p className="mt-1 text-xs text-white/45 sm:text-sm">{wizardStep === 1 ? t('roomSubtitlePrize') : t('roomSubtitlePlayers')}</p>
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-12 gap-2 sm:gap-4 lg:gap-8 items-start">
