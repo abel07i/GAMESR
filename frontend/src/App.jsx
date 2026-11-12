@@ -389,7 +389,7 @@ export default function App() {
     const [appliedInvite, setAppliedInvite] = useState(false);
     const [inviteLoading, setInviteLoading] = useState(false);
     const [inviteMessage, setInviteMessage] = useState(null);
-    const [systemConfig, setSystemConfig] = useState({ telebirrPhone: '0949626463', telebirrName: 'Abel Wondmeneh' });
+    const [systemConfig, setSystemConfig] = useState({ telebirrPhone: '0949626463', telebirrName: 'Abel Wondmeneh', seatQuotas: null });
     const [wizard, setWizard] = useState({ groupSize: 10, seatNumbers: [1], jackpot: 500 });
     const [wizardStep, setWizardStep] = useState(1); // 1 = choose prize, 2 = choose players & join
     const [roomSubTab, setRoomSubTab] = useState('players'); // 'players' | 'results' inside active room
@@ -1261,11 +1261,12 @@ export default function App() {
         fetch(`${API_URL}/api/v1/config`)
             .then(res => res.json())
             .then(data => {
-                if (data.telebirrPhone || data.telebirrName) {
-                    setSystemConfig({
-                        telebirrPhone: data.telebirrPhone || '0949626463',
-                        telebirrName: data.telebirrName || 'Abel Wondmeneh'
-                    });
+                if (data.telebirrPhone || data.telebirrName || data.seatQuotas) {
+                    setSystemConfig(prev => ({
+                        telebirrPhone: data.telebirrPhone || prev.telebirrPhone || '0949626463',
+                        telebirrName: data.telebirrName || prev.telebirrName || 'Abel Wondmeneh',
+                        seatQuotas: data.seatQuotas || prev.seatQuotas
+                    }));
                 }
             })
             .catch(err => console.error('Failed to load system config:', err));
@@ -1559,8 +1560,18 @@ export default function App() {
     };
 
     const getDefaultSeatQuota = (groupSize) => {
-        const quotas = { 5: 1, 10: 2, 15: 3, 20: 4, 30: 5, 40: 6, 50: 7, 60: 8, 70: 9, 80: 9 };
+        const dynamicQuota = systemConfig.seatQuotas?.[groupSize];
+        if (dynamicQuota) return dynamicQuota;
+        const quotas = { 5: 1, 10: 2, 15: 3, 20: 4, 30: 5, 40: 6, 50: 7, 60: 8, 70: 9, 80: 10 };
         return quotas[groupSize] || (groupSize === 5 ? 1 : Math.floor(groupSize / 10) + 1);
+    };
+
+    const getRoomPickLimits = (room) => {
+        const maxAllowed = room.maxSeatsPerUser || getDefaultSeatQuota(room.groupSize);
+        const myExistingSeatsCount = (room.seats || []).filter(s => user && s.userId === user.id).length;
+        const remainingSeatsInRoom = Math.max(0, room.groupSize - (room.filledSeats || 0));
+        const remainingAllowed = Math.max(0, Math.min(maxAllowed - myExistingSeatsCount, remainingSeatsInRoom));
+        return { maxAllowed, myExistingSeatsCount, remainingSeatsInRoom, remainingAllowed };
     };
 
     const getTierCategory = (jackpotAmt) => {
@@ -1613,6 +1624,17 @@ export default function App() {
         }
         const targetRoom = activeRoom || seatModal.room;
         if (!targetRoom) return;
+
+        const { maxAllowed, remainingAllowed } = getRoomPickLimits(targetRoom);
+        if (seatModal.selectedSeats.length > remainingAllowed) {
+            showAlert(
+                language === 'am'
+                    ? `በዚህ ክፍል ከፍተኛ ${maxAllowed} ቁጥር ብቻ መምረጥ ይችላሉ።`
+                    : `You can pick at most ${maxAllowed} numbers in this room.`,
+                'warning'
+            );
+            return;
+        }
 
         try {
             const isDraft = Boolean(targetRoom.isDraft);
@@ -2120,23 +2142,36 @@ export default function App() {
                         </div>
 
                         {(() => {
-                            const maxAllowed = activeRoom.maxSeatsPerUser || getDefaultSeatQuota(activeRoom.groupSize);
-                            const myExistingSeatsCount = (activeRoom.seats || []).filter(s => user && s.userId === user.id).length;
-                            const remainingAllowed = Math.max(0, maxAllowed - myExistingSeatsCount);
+                            const { maxAllowed, myExistingSeatsCount, remainingSeatsInRoom, remainingAllowed } = getRoomPickLimits(activeRoom);
+                            const isRoomFull = remainingSeatsInRoom <= 0;
+                            const isSelectionFull = seatModal.selectedSeats.length >= remainingAllowed;
+                            const validSelectedCount = Math.min(seatModal.selectedSeats.length, remainingAllowed);
                             const totalBet = seatModal.selectedSeats.length * activeRoom.ticketPrice;
                             const formattedBet = totalBet % 1 === 0 ? totalBet.toLocaleString() : totalBet.toFixed(2);
                             return (
                                 <>
                                     <div className="mt-0.5 sm:mt-1">
-                                        <div className="flex justify-between items-center mb-1.5 sm:mb-2 px-1">
+                                        <div className="flex justify-between items-center gap-2 mb-1.5 sm:mb-2 px-1">
                                             <span className="text-xs sm:text-sm font-bold text-white/90">
                                                 {t('pickNumsMax', maxAllowed)}
                                             </span>
-                                            {myExistingSeatsCount > 0 && (
-                                                <span className="text-[11px] font-bold text-emerald-400">
-                                                    {t('alreadyOwn', myExistingSeatsCount)}
-                                                </span>
-                                            )}
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                {myExistingSeatsCount > 0 && (
+                                                    <span className="text-[11px] font-bold text-emerald-400">
+                                                        {t('alreadyOwn', myExistingSeatsCount)}
+                                                    </span>
+                                                )}
+                                                {!isRoomFull && (
+                                                    <span className={`text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full border ${isSelectionFull
+                                                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                            : 'bg-white/5 text-white/60 border-white/10'
+                                                        }`}>
+                                                        {remainingAllowed <= 0
+                                                            ? (language === 'am' ? 'ከፍተኛ ገደብ ደርሷል' : 'Max reached')
+                                                            : `${validSelectedCount}/${remainingAllowed}`}
+                                                    </span>
+                                                )}
+                                            </div>
                                         </div>
 
                                         <div className="grid gap-1.5 sm:gap-2" style={{ gridTemplateColumns: activeRoom.groupSize === 5 ? 'repeat(5, minmax(0, 1fr))' : 'repeat(auto-fit, minmax(min(100%, 42px), 1fr))' }}>
@@ -2145,15 +2180,15 @@ export default function App() {
                                                 const isTaken = Boolean(seatOwner);
                                                 const isMySeat = Boolean(user && seatOwner && (seatOwner.userId === user.id));
                                                 const isSelected = seatModal.selectedSeats.includes(seatNumber);
-                                                const isRoomFull = (activeRoom.filledSeats || 0) >= activeRoom.groupSize;
+                                                const isMaxBlocked = !isSelected && !isTaken && !isRoomFull && isSelectionFull;
                                                 return (
                                                     <button
                                                         key={seatNumber}
-                                                        disabled={isTaken || isRoomFull}
+                                                        disabled={isTaken || isRoomFull || isMaxBlocked}
                                                         onClick={() => {
                                                             if (isSelected) {
                                                                 playTick();
-                                                                setSeatModal({ ...seatModal, selectedSeats: seatModal.selectedSeats.filter(n => n !== seatNumber) });
+                                                                setSeatModal(prev => ({ ...prev, selectedSeats: prev.selectedSeats.filter(n => n !== seatNumber) }));
                                                             } else if (remainingAllowed <= 0) {
                                                                 showAlert(
                                                                     language === 'am'
@@ -2161,9 +2196,21 @@ export default function App() {
                                                                         : `Max ${maxAllowed} seats allowed per player for group size ${activeRoom.groupSize}. You already own ${myExistingSeatsCount} seat${myExistingSeatsCount > 1 ? 's' : ''}.`,
                                                                     'warning'
                                                                 );
+                                                            } else if (seatModal.selectedSeats.length >= remainingAllowed) {
+                                                                showAlert(
+                                                                    language === 'am'
+                                                                        ? `ከፍተኛ ${remainingAllowed} ቁጥር ብቻ መምረጥ ይችላሉ።`
+                                                                        : `You can only pick up to ${remainingAllowed} number${remainingAllowed > 1 ? 's' : ''}.`,
+                                                                    'warning'
+                                                                );
                                                             } else {
                                                                 playTick();
-                                                                setSeatModal({ ...seatModal, selectedSeats: [...seatModal.selectedSeats, seatNumber] });
+                                                                setSeatModal(prev => {
+                                                                    if (prev.selectedSeats.includes(seatNumber) || prev.selectedSeats.length >= remainingAllowed) {
+                                                                        return prev;
+                                                                    }
+                                                                    return { ...prev, selectedSeats: [...prev.selectedSeats, seatNumber] };
+                                                                });
                                                             }
                                                         }}
                                                         className={`aspect-square max-h-12 sm:max-h-14 w-full rounded-xl sm:rounded-2xl text-xs sm:text-sm font-bold transition flex flex-col items-center justify-center relative
@@ -2173,7 +2220,9 @@ export default function App() {
                                                                     ? 'bg-surface-900/90 text-white/30 cursor-not-allowed border border-white/5'
                                                                     : isSelected
                                                                         ? 'bg-white text-black shadow-[0_0_15px_rgba(255,255,255,0.3)] scale-105 z-10 font-black'
-                                                                        : 'bg-surface-800 border border-white/5 text-white/80 hover:bg-surface-700 active:scale-95'}`}
+                                                                        : isMaxBlocked
+                                                                            ? 'bg-surface-900/50 text-white/25 cursor-not-allowed border border-white/5 opacity-45'
+                                                                            : 'bg-surface-800 border border-white/5 text-white/80 hover:bg-surface-700 active:scale-95'}`}
                                                     >
                                                         <span>{seatNumber.toString().padStart(2, '0')}</span>
                                                         {isMySeat && (
@@ -2403,10 +2452,10 @@ export default function App() {
                                     <div className="fixed bottom-0 left-0 right-0 p-3 sm:p-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-[calc(1rem+env(safe-area-inset-bottom))] bg-gradient-to-t from-surface-950 via-surface-950/95 to-transparent z-40 pointer-events-none">
                                         <button
                                             onClick={buySeat}
-                                            disabled={seatModal.selectedSeats.length === 0 || (activeRoom.filledSeats || 0) >= activeRoom.groupSize}
-                                            className={`pointer-events-auto w-full max-w-md mx-auto block py-3.5 sm:py-4 rounded-xl sm:rounded-2xl font-black text-xs sm:text-[15px] transition ${seatModal.selectedSeats.length > 0 && (activeRoom.filledSeats || 0) < activeRoom.groupSize ? 'bg-gradient-to-b from-gold-300 to-gold-600 text-black shadow-[0_0_20px_rgba(234,161,27,0.3)] active:scale-98' : 'bg-surface-800 text-white/30 cursor-not-allowed border border-white/10'}`}
+                                            disabled={seatModal.selectedSeats.length === 0 || seatModal.selectedSeats.length > remainingAllowed || isRoomFull || remainingAllowed <= 0}
+                                            className={`pointer-events-auto w-full max-w-md mx-auto block py-3.5 sm:py-4 rounded-xl sm:rounded-2xl font-black text-xs sm:text-[15px] transition ${seatModal.selectedSeats.length > 0 && seatModal.selectedSeats.length <= remainingAllowed && !isRoomFull && remainingAllowed > 0 ? 'bg-gradient-to-b from-gold-300 to-gold-600 text-black shadow-[0_0_20px_rgba(234,161,27,0.3)] active:scale-98' : 'bg-surface-800 text-white/30 cursor-not-allowed border border-white/10'}`}
                                         >
-                                            {(activeRoom.filledSeats || 0) >= activeRoom.groupSize
+                                            {isRoomFull || remainingAllowed <= 0
                                                 ? t('limitReached')
                                                 : seatModal.selectedSeats.length > 0
                                                     ? `${t('betLabel')} ${formattedBet} ${t('birLabel')} (${seatModal.selectedSeats.length} ${seatModal.selectedSeats.length > 1 ? t('numbersPlural') : t('numberSingle')})`

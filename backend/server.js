@@ -576,11 +576,19 @@ app.post('/api/v1/user/invite', playerMiddleware, walletLimiter, async (req, res
 
 app.get('/api/v1/config', async (req, res) => {
   try {
-    const sysConfig = await db.query(`SELECT * FROM system_config WHERE config_key IN ('TELEBIRR_PHONE', 'TELEBIRR_NAME')`);
+    const [sysConfig, quotaRows] = await Promise.all([
+      db.query(`SELECT * FROM system_config WHERE config_key IN ('TELEBIRR_PHONE', 'TELEBIRR_NAME')`),
+      db.query(`SELECT group_size, max_seats_per_user FROM seat_quotas ORDER BY group_size`)
+    ]);
     const configMap = sysConfig.rows.reduce((acc, row) => ({ ...acc, [row.config_key]: row.config_value }), {});
+    const seatQuotas = quotaRows.rows.reduce((acc, row) => {
+      acc[row.group_size] = Number(row.max_seats_per_user);
+      return acc;
+    }, {});
     res.json({
       telebirrPhone: configMap.TELEBIRR_PHONE || '',
-      telebirrName: configMap.TELEBIRR_NAME || ''
+      telebirrName: configMap.TELEBIRR_NAME || '',
+      seatQuotas
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to load config' });
